@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽위시 RP Manager 개인화
 // @namespace    local.rp.context.manager.personal
-// @version      0.13.0.1
+// @version      0.13.0.2
 // @description  기존 RP 기억 관리 기능과 ChatGPT 웹 전송형 날짜요약·현재상태 갱신을 지원하는 개인화 버전입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -226,13 +226,13 @@
   // 버전별 키를 쓰면 구버전과 신버전이 동시에 설치됐을 때 둘 다 실행될 수 있습니다.
   // 모든 버전이 공유하는 고정 키로 중복 실행을 막습니다.
   if (window.__WISH_RP_MANAGER_LOADED__) return;
-  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.13.0.1-personal', loadedAt: Date.now() };
+  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.13.0.2-personal', loadedAt: Date.now() };
   // 같은 페이지에 남아 있는 v0.8.10 복사본이 뒤늦게 시작되는 경우도 차단합니다.
   window.__RP_MANAGER_0810_LOADED__ = true;
 
   const APP = {
     name: '🪽위시 RP Manager 개인화',
-    version: '0.13.0.1',
+    version: '0.13.0.2',
     dbName: 'RPContextManagerDB',
     dbVersion: 2,
     storeName: 'rooms',
@@ -3356,13 +3356,15 @@ USER 캐릭터의 다음 항목은 직접 RP, USER의 명시적 서술 또는 �
   const AI_LOG_SUMMARY_GUIDE_VARIANT_KEY = 'RPCM_ai_log_summary_guide_variant_v1';
 
   function normalizeLogSummaryGuideVariant(value) {
-    return value === 'adult' ? 'adult' : 'general';
+    // 선택값이 없는 개인화 설치는 성인용을 기본으로 사용합니다.
+    // 사용자가 일반용을 명시적으로 저장한 경우에만 그 선택을 유지합니다.
+    return value === 'general' ? 'general' : 'adult';
   }
 
   function getLogSummaryGuideVariant(api = false) {
     try {
       return normalizeLogSummaryGuideVariant(localStorage.getItem(api ? AI_LOG_SUMMARY_GUIDE_VARIANT_KEY : LOG_SUMMARY_GUIDE_VARIANT_KEY));
-    } catch (_) { return 'general'; }
+    } catch (_) { return 'adult'; }
   }
 
   function saveLogSummaryGuideVariant(value, api = false) {
@@ -4398,8 +4400,15 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
       turnOrdinal:turns.length,
       completedAt:nowIso(),
     };
-    room.chatGptReminderDismissedTurnKey = '';
+    room.chatGptReminderDismissedTurnKey = String(latest.key);
     await saveRoom(room);
+    state.chatGptReminderCheckedAt = Date.now();
+    state.chatGptReminderSnapshot = {
+      roomId:String(room.chatId),
+      elapsed:0,
+      latestKey:String(latest.key),
+      anchorMissing:false,
+    };
     removeCurrentStateReminderBanner();
     return { latest, turnOrdinal:turns.length };
   }
@@ -4414,6 +4423,16 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
     const input = document.querySelector('.__chat_input_textarea,[contenteditable="true"].ProseMirror,[contenteditable="true"][data-placeholder],textarea[placeholder]');
     if (!input) return null;
     return { anchor:input.closest('form') || input.parentElement?.parentElement?.parentElement || input.parentElement, inside:false };
+  }
+
+  function shouldShowCurrentStateReminder(room, snapshot, settings = loadChatGptWebSettings()) {
+    if (!room || !snapshot || snapshot.roomId !== String(room.chatId)) return false;
+    const latestKey = String(snapshot.latestKey || '');
+    if (!latestKey || Number(snapshot.elapsed || 0) < Number(settings.reminderTurns || 30)) return false;
+    if (String(room.chatGptReminderDismissedTurnKey || '') === latestKey) return false;
+    // 완료 버튼이 최신 턴을 checkpoint로 저장한 직후에는 이전 캐시의 경과 턴 수로 재표시하지 않습니다.
+    if (chatGptCheckpointKey(room) === latestKey) return false;
+    return true;
   }
 
   function renderCurrentStateReminderBanner(room, snapshot) {
@@ -4445,9 +4464,8 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
     if (!settings.reminderEnabled) { removeCurrentStateReminderBanner(); return; }
     const now = Date.now();
     if (!force && state.chatGptReminderCheckedAt && now - state.chatGptReminderCheckedAt < 30000) {
-      if (state.chatGptReminderSnapshot?.roomId === String(room.chatId) && state.chatGptReminderSnapshot.elapsed >= settings.reminderTurns) {
-        renderCurrentStateReminderBanner(room, state.chatGptReminderSnapshot);
-      }
+      if (shouldShowCurrentStateReminder(room, state.chatGptReminderSnapshot, settings)) renderCurrentStateReminderBanner(room, state.chatGptReminderSnapshot);
+      else removeCurrentStateReminderBanner();
       return;
     }
     if (state.chatGptReminderBusy) return;
@@ -4459,7 +4477,7 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
       const latestKey = String(turns[turns.length - 1]?.key || '');
       const snapshot = { roomId:String(room.chatId), elapsed:range.turns.length, latestKey, anchorMissing:range.anchorMissing };
       state.chatGptReminderSnapshot = snapshot;
-      if (snapshot.elapsed >= settings.reminderTurns && String(room.chatGptReminderDismissedTurnKey || '') !== latestKey) renderCurrentStateReminderBanner(room, snapshot);
+      if (shouldShowCurrentStateReminder(room, snapshot, settings)) renderCurrentStateReminderBanner(room, snapshot);
       else removeCurrentStateReminderBanner();
     } catch (error) {
       console.warn('[RP Manager 개인화] 현재상태 알림 계산 실패', error);
