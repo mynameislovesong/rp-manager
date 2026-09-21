@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽위시 RP Manager 개인화
 // @namespace    local.rp.context.manager.personal
-// @version      0.13.0.3
+// @version      0.13.0.4
 // @description  기존 RP 기억 관리 기능과 ChatGPT 웹 전송형 날짜요약·현재상태 갱신을 지원하는 개인화 버전입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -75,22 +75,54 @@
     return next;
   }
 
-  function chatGptBridgeNotice(message, tone = 'info', retry = null) {
-    let notice = document.querySelector('#rpcm-chatgpt-bridge-notice');
-    if (!notice) {
-      notice = document.createElement('div');
-      notice.id = 'rpcm-chatgpt-bridge-notice';
-      document.documentElement.appendChild(notice);
+  let chatGptBridgeNoticeTimer = null;
+
+  function removeChatGptBridgeNotice() {
+    if (chatGptBridgeNoticeTimer) {
+      clearTimeout(chatGptBridgeNoticeTimer);
+      chatGptBridgeNoticeTimer = null;
     }
+    document.querySelector('#rpcm-chatgpt-bridge-notice')?.remove();
+  }
+
+  function chatGptBridgeNotice(message, tone = 'info', retry = null, timeoutMs = null) {
+    removeChatGptBridgeNotice();
+
+    const notice = document.createElement('div');
+    notice.id = 'rpcm-chatgpt-bridge-notice';
+    document.documentElement.appendChild(notice);
+
     notice.dataset.tone = tone;
-    notice.innerHTML = `<span>${String(message || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]))}</span>${retry ? '<button type="button">다시 시도</button>' : ''}`;
-    if (retry) notice.querySelector('button').onclick = retry;
+    const escapedMessage = String(message || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    notice.innerHTML = `<span>${escapedMessage}</span>${retry ? '<button type="button" data-rpcm-bridge-retry>다시 시도</button>' : ''}<button type="button" data-rpcm-bridge-close aria-label="닫기">×</button>`;
+
+    const retryButton = notice.querySelector('[data-rpcm-bridge-retry]');
+    if (retryButton && retry) {
+      retryButton.onclick = () => {
+        removeChatGptBridgeNotice();
+        retry();
+      };
+    }
+    const closeButton = notice.querySelector('[data-rpcm-bridge-close]');
+    if (closeButton) closeButton.onclick = removeChatGptBridgeNotice;
+
     if (!document.querySelector('#rpcm-chatgpt-bridge-style')) {
       const style = document.createElement('style');
       style.id = 'rpcm-chatgpt-bridge-style';
-      style.textContent = '#rpcm-chatgpt-bridge-notice{position:fixed;left:50%;bottom:92px;z-index:2147483647;display:flex;align-items:center;gap:10px;max-width:min(720px,calc(100vw - 28px));box-sizing:border-box;transform:translateX(-50%);padding:10px 14px;border:1px solid #4b5563;border-radius:11px;background:#16181c;color:#f4f4f5;box-shadow:0 10px 36px rgba(0,0,0,.42);font:12px/1.45 -apple-system,BlinkMacSystemFont,"Pretendard",sans-serif}#rpcm-chatgpt-bridge-notice[data-tone="success"]{border-color:#2f8f61}#rpcm-chatgpt-bridge-notice[data-tone="error"]{border-color:#d15463;color:#ffd7dc}#rpcm-chatgpt-bridge-notice button{border:1px solid #697386;border-radius:7px;background:#242833;color:#fff;padding:6px 9px;cursor:pointer}';
+      style.textContent = '#rpcm-chatgpt-bridge-notice{position:fixed;left:50%;bottom:92px;z-index:2147483647;display:flex;align-items:center;gap:10px;max-width:min(720px,calc(100vw - 28px));box-sizing:border-box;transform:translateX(-50%);padding:10px 14px;border:1px solid #4b5563;border-radius:11px;background:#16181c;color:#f4f4f5;box-shadow:0 10px 36px rgba(0,0,0,.42);font:12px/1.45 -apple-system,BlinkMacSystemFont,"Pretendard",sans-serif}#rpcm-chatgpt-bridge-notice[data-tone="success"]{border-color:#2f8f61}#rpcm-chatgpt-bridge-notice[data-tone="error"]{border-color:#d15463;color:#ffd7dc}#rpcm-chatgpt-bridge-notice button{border:1px solid #697386;border-radius:7px;background:#242833;color:#fff;padding:6px 9px;cursor:pointer}#rpcm-chatgpt-bridge-notice button[data-rpcm-bridge-close]{margin-left:-2px;border:0;background:transparent;color:inherit;padding:2px 4px;font-size:16px;line-height:1;opacity:.8}#rpcm-chatgpt-bridge-notice button[data-rpcm-bridge-close]:hover{opacity:1}';
       document.documentElement.appendChild(style);
     }
+
+    const duration = Number.isFinite(Number(timeoutMs))
+      ? Math.max(1500, Number(timeoutMs))
+      : (retry ? 8000 : 5000);
+    chatGptBridgeNoticeTimer = setTimeout(() => {
+      if (notice.isConnected) notice.remove();
+      if (document.querySelector('#rpcm-chatgpt-bridge-notice') === notice) {
+        document.querySelector('#rpcm-chatgpt-bridge-notice')?.remove();
+      }
+      chatGptBridgeNoticeTimer = null;
+    }, duration);
   }
 
   function bridgeDelay(ms) {
@@ -160,7 +192,8 @@
     const createdAt = Date.parse(payload.createdAt || '');
     if (Number.isFinite(createdAt) && Date.now() - createdAt > 6 * 60 * 60 * 1000) {
       setChatGptBridgeStatus(payload, 'error', '6시간이 지난 전송 자료입니다. Crack에서 다시 보내 주세요.');
-      chatGptBridgeNotice('RP Manager 전송 자료가 만료되었습니다. Crack에서 다시 보내 주세요.', 'error');
+      try { GM_deleteValue(CHATGPT_BRIDGE_PENDING_KEY); } catch (_) {}
+      chatGptBridgeNotice('RP Manager 전송 자료가 만료되었습니다. Crack에서 다시 보내 주세요.', 'error', null, 5000);
       return;
     }
     let targetPath = '';
@@ -226,13 +259,13 @@
   // 버전별 키를 쓰면 구버전과 신버전이 동시에 설치됐을 때 둘 다 실행될 수 있습니다.
   // 모든 버전이 공유하는 고정 키로 중복 실행을 막습니다.
   if (window.__WISH_RP_MANAGER_LOADED__) return;
-  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.13.0.3-personal', loadedAt: Date.now() };
+  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.13.0.4-personal', loadedAt: Date.now() };
   // 같은 페이지에 남아 있는 v0.8.10 복사본이 뒤늦게 시작되는 경우도 차단합니다.
   window.__RP_MANAGER_0810_LOADED__ = true;
 
   const APP = {
     name: '🪽위시 RP Manager 개인화',
-    version: '0.13.0.3',
+    version: '0.13.0.4',
     dbName: 'RPContextManagerDB',
     dbVersion: 2,
     storeName: 'rooms',
