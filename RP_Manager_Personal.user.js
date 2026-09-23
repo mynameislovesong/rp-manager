@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽위시 RP Manager 개인화
 // @namespace    local.rp.context.manager.personal
-// @version      0.15.5
+// @version      0.15.6
 // @description  기존 RP 기억 관리 기능과 ChatGPT 웹 전송형 날짜요약·현재상태 갱신을 지원하는 개인화 버전입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -259,13 +259,13 @@
   // 버전별 키를 쓰면 구버전과 신버전이 동시에 설치됐을 때 둘 다 실행될 수 있습니다.
   // 모든 버전이 공유하는 고정 키로 중복 실행을 막습니다.
   if (window.__WISH_RP_MANAGER_LOADED__) return;
-  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.15.5-personal', loadedAt: Date.now() };
+  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.15.6-personal', loadedAt: Date.now() };
   // 같은 페이지에 남아 있는 v0.8.10 복사본이 뒤늦게 시작되는 경우도 차단합니다.
   window.__RP_MANAGER_0810_LOADED__ = true;
 
   const APP = {
     name: '🪽위시 RP Manager 개인화',
-    version: '0.15.5',
+    version: '0.15.6',
     dbName: 'RPContextManagerDB',
     dbVersion: 2,
     storeName: 'rooms',
@@ -297,7 +297,7 @@
     legacyMarkerEnd: '</rp_context_manager>',
     modalPosKey: 'RPCM_modal_position_v1',
     uiPrefsKey: 'RPCM_ui_preferences_v1',
-    logRecallRevision: 9, // v0.12.59: 기존 활성 주입도 UTF-8 요청 안전선으로 로그를 다시 선정
+    logRecallRevision: 10, // v0.15.6: 구버전 장면 키워드 점수를 폐기하고 API 관련도로 즉시 재평가
   };
 
   const STORY_TIMELINE_GUIDE_V15 = String.raw`연속성 타임라인 생성·갱신 지침 v1.5 범용
@@ -11578,14 +11578,17 @@ JSON 하나만 출력:
     const core = [...new Set((item.matchedCoreTerms || []).map(String).filter(Boolean))].slice(0, 4);
     const chars = [...new Set((item.matchedCharacterTerms || []).map(String).filter(Boolean))].slice(0, 3);
     const bits = [];
-    if (core.length) bits.push(`핵심어 ${core.join(' · ')}`);
-    if (chars.length) bits.push(`인물 보조 ${chars.join(' · ')}`);
+    if (!isSceneMemory && core.length) bits.push(`핵심어 ${core.join(' · ')}`);
+    if (!isSceneMemory && chars.length) bits.push(`인물 보조 ${chars.join(' · ')}`);
 
     const hasTotal = item.recallScore !== null && item.recallScore !== undefined && item.recallScore !== '' && Number.isFinite(Number(item.recallScore));
+    const hasSceneScore = item.sceneRelevanceScore !== null && item.sceneRelevanceScore !== undefined && item.sceneRelevanceScore !== '' && Number.isFinite(Number(item.sceneRelevanceScore));
     const hasCoreScore = item.recallCoreScore !== null && item.recallCoreScore !== undefined && item.recallCoreScore !== '' && Number.isFinite(Number(item.recallCoreScore));
     const hasCharacterScore = item.recallCharacterScore !== null && item.recallCharacterScore !== undefined && item.recallCharacterScore !== '' && Number.isFinite(Number(item.recallCharacterScore));
-    if (hasTotal && isSceneMemory) {
-      bits.push(`장면 관련도 ${Number(item.recallScore).toFixed(1)}%`);
+    if (isSceneMemory && hasSceneScore) {
+      bits.push(`장면 관련도 ${Number(item.sceneRelevanceScore).toFixed(1)}%`);
+    } else if (isSceneMemory) {
+      bits.push('구버전 점수 폐기 · API 관련도 재평가 대기');
     } else if (hasTotal) {
       const total = Number(item.recallScore);
       if (hasCoreScore && hasCharacterScore) {
@@ -11598,7 +11601,7 @@ JSON 하나만 출력:
     }
     const rank = Number(item.recallRank || 0);
     const candidateCount = Number(item.recallCandidateCount || 0);
-    if (rank > 0 && candidateCount > 0) bits.push(`${isSceneMemory ? '장면 ' : ''}후보 ${candidateCount}개 중 ${rank}위`);
+    if (rank > 0 && candidateCount > 0 && (!isSceneMemory || hasSceneScore)) bits.push(`${isSceneMemory ? '장면 ' : ''}후보 ${candidateCount}개 중 ${rank}위`);
     return bits.join(' · ');
   }
 
@@ -14478,9 +14481,11 @@ JSON 하나만 출력:
 
     if (latestAssistantId === p.baselineAssistantId) {
       // v0.8.9에서 이어진 활성 주입은 새 버전에서 한 번만 로그 후보를 다시 계산합니다.
-      // 따라서 업데이트 직후에도 사용자가 로그 칸을 다시 건드리지 않아도 최신 날짜가 반영됩니다.
+      // v0.15.5에서 저장된 장면의 무제한 키워드 점수도 이 경로에서 폐기하고
+      // 별도 API 관련도 95점 기준으로 즉시 다시 판정합니다.
       if (Number(p.logRecallRevision || 0) < APP.logRecallRevision) {
         replacePendingLogItems(room);
+        await replacePendingSceneMemoryItems(room);
         await syncPendingCarrier(room, 'log-recall-upgrade');
         if (room.pending) {
           room.pending.logRecallRevision = APP.logRecallRevision;
