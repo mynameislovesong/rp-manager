@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽위시 RP Manager 개인화
 // @namespace    local.rp.context.manager.personal
-// @version      0.15.4
+// @version      0.15.5
 // @description  기존 RP 기억 관리 기능과 ChatGPT 웹 전송형 날짜요약·현재상태 갱신을 지원하는 개인화 버전입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -259,13 +259,13 @@
   // 버전별 키를 쓰면 구버전과 신버전이 동시에 설치됐을 때 둘 다 실행될 수 있습니다.
   // 모든 버전이 공유하는 고정 키로 중복 실행을 막습니다.
   if (window.__WISH_RP_MANAGER_LOADED__) return;
-  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.15.4-personal', loadedAt: Date.now() };
+  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.15.5-personal', loadedAt: Date.now() };
   // 같은 페이지에 남아 있는 v0.8.10 복사본이 뒤늦게 시작되는 경우도 차단합니다.
   window.__RP_MANAGER_0810_LOADED__ = true;
 
   const APP = {
     name: '🪽위시 RP Manager 개인화',
-    version: '0.15.4',
+    version: '0.15.5',
     dbName: 'RPContextManagerDB',
     dbVersion: 2,
     storeName: 'rooms',
@@ -8432,75 +8432,162 @@ try {
     };
   }
 
-  function collectSceneMemoryRecall(room, contextText = '') {
+  const SCENE_MEMORY_RELEVANCE_THRESHOLD = 95;
+  const SCENE_MEMORY_CANDIDATE_LIMIT = 8;
+  const SCENE_MEMORY_USAGE_RULES = `[장면 기억 사용 규칙]
+
+아래 장면 기억은 과거 장면의 사실·관계·감정 맥락을 확인하기 위한 실제 이전 로그 참고자료다.
+
+과거 장면의 대사, 행동, 신체 반응, 묘사 방식, 표현을 현재 장면에서 반복하거나 재현하지 않는다.
+
+과거 장면을 현재 인물의 반응 방식이나 묘사 패턴을 결정하는 템플릿으로 사용하지 않는다.
+
+현재 상황에서 자연스럽게 필요한 경우에만
+과거 사건의 사실관계와 관계적 의미를 참고한다.
+
+과거 장면에서 한 번 나타난 행동이나 반응을
+캐릭터의 습관·성격 규칙으로 일반화하지 않는다.
+
+현재 장면의 반응은 현재 상황을 기준으로 새롭게 생성한다.`;
+
+  const AI_SCENE_MEMORY_RESPONSE_SCHEMA = Object.freeze({
+    type:'OBJECT',
+    properties:{ key:{ type:'STRING' }, score:{ type:'NUMBER' }, reason:{ type:'STRING' } },
+    required:['key','score','reason'],
+  });
+
+  function sceneMemoryCandidateBlocks(room, contextText = '') {
     const slot = (room?.slots || []).find(item => item?.id === 'sceneMemory');
-    if (!slot?.enabled || !String(slot.content || '').trim()) return { sceneItems:[], pairedLogItems:[] };
-    // 장면 기억의 공식 저장 단위는 장면별 N일차 블록입니다. 같은 일차의 복수 장면도
-    // 각각 읽고, 기존 관련로그 판정 함수로 모든 사건명 후보의 유사도를 평가합니다.
-    const sceneBlocks = parseDatedLogBlocks(normalizeSceneMemoryBlocks(slot.content)).filter(block => block.isOrdinalDay);
-    const eventCandidates = [];
-    for (const block of sceneBlocks) {
-      const events = String(block.events || '').split(/[·ㆍ・]/).map(value => value.trim()).filter(Boolean);
-      for (let index = 0; index < events.length; index++) {
-        const eventName = events[index];
-        eventCandidates.push({
-          ...block,
-          key:`scene-event:${block.calendarDateKey}:${simpleHash(eventName)}:${index}`,
-          events:eventName,
-          raw:`[${block.fullDate}-${eventName}]${block.body ? `\n${block.body}` : ''}`,
-          _sceneBlock:block,
-          _sceneEvent:eventName,
-        });
-      }
+    if (!slot?.enabled || !String(slot.content || '').trim()) return { slot:null, candidates:[] };
+    const blocks = parseDatedLogBlocks(normalizeSceneMemoryBlocks(slot.content)).filter(block => block.isOrdinalDay);
+    if (!blocks.length) return { slot, candidates:[] };
+
+    // 키워드 점수는 API에 보낼 후보 수를 줄이는 용도로만 사용합니다. 최종 장면 관련도와
+    // 95점 통과 여부는 아래의 별도 API 판정 결과만 사용합니다.
+    const scored = scoreRelatedLogBlocks(blocks, contextText, new Set(), room);
+    const ordered = [];
+    const seen = new Set();
+    for (const entry of scored) {
+      if (seen.has(entry.block)) continue;
+      seen.add(entry.block);
+      ordered.push(entry.block);
     }
-    const scoredCandidates = scoreRelatedLogBlocks(eventCandidates, contextText, new Set(), room);
-    const scored = scoredCandidates[0];
-    if (!scored) return { sceneItems:[], pairedLogItems:[] };
-
-    const candidate = scored.block;
-    const sceneBlock = candidate._sceneBlock || candidate;
-    const eventName = String(candidate._sceneEvent || candidate.events || '').trim();
-    const sceneItem = {
-      slotId:`scene-memory:${candidate.key}`,
-      sourceSlotId:'sceneMemory',
-      sourceKey:candidate.key,
-      autoType:'related-scene',
-      title:`장면 기억 ${sceneBlock.fullDate}${eventName ? ` · ${eventName}` : ''}`,
-      group:'scene-memory',
-      content:String(candidate.raw || sceneBlock.raw || '').trim(),
-      totalTurns:normalizeRetentionTurns(slot.retentionTurns),
-      usedTurns:0,
-      recallReason:`가장 유사한 장면 · ${relatedLogReason(scored)}`,
-      recallScore:scored.score,
-      recallCoreScore:scored.coreScore,
-      recallCharacterScore:scored.characterScore,
-      recallRank:1,
-      recallCandidateCount:scoredCandidates.length,
-      matchedTerms:[...(scored.matchedPhrases || []), ...(scored.matchedCoreTokens || []), ...(scored.matchedCharacterTerms || [])],
-      matchedCoreTerms:[...(scored.matchedPhrases || []), ...(scored.matchedCoreTokens || []), ...(scored.matchedRareTokens || [])],
-      matchedCharacterTerms:[...(scored.matchedCharacterTerms || [])],
-      sceneDateKey:sceneBlock.calendarDateKey,
-      sceneEvent:eventName,
-      logIndex:sceneBlock.index,
+    for (const block of [...blocks].reverse()) {
+      if (seen.has(block)) continue;
+      seen.add(block);
+      ordered.push(block);
+    }
+    return {
+      slot,
+      candidates:ordered.slice(0, SCENE_MEMORY_CANDIDATE_LIMIT).map((block, index) => ({
+        key:`SCENE_${String(index + 1).padStart(2, '0')}`,
+        block,
+      })),
     };
+  }
 
-    const logSlot = (room?.slots || []).find(item => item?.id === 'logSummary');
-    if (!logSlot?.enabled || !String(logSlot.content || '').trim()) return { sceneItems:[sceneItem], pairedLogItems:[] };
-    const sameDate = parseDatedLogBlocks(logSlot.content).filter(block => block.calendarDateKey === sceneBlock.calendarDateKey);
-    if (!sameDate.length) return { sceneItems:[sceneItem], pairedLogItems:[] };
-    const activeLabel = activeLogTimelineLabel(room);
-    const pairedBlock = sameDate.find(block => blockBelongsToTimeline(block, activeLabel)) || sameDate[sameDate.length - 1];
-    const pairedLog = makeLogRecallItem(
-      pairedBlock,
-      logSlot,
-      'scene-paired-log',
-      '장면짝로그',
-      `${sceneBlock.fullDate}${eventName ? ` · ${eventName}` : ''} 장면 기억과 같은 일차 요약`,
-      { score:scored.score, coreScore:scored.coreScore, characterScore:scored.characterScore, matchedTerms:sceneItem.matchedTerms, matchedCoreTerms:sceneItem.matchedCoreTerms, matchedCharacterTerms:sceneItem.matchedCharacterTerms }
-    );
-    pairedLog.sceneDateKey = sceneBlock.calendarDateKey;
-    pairedLog.relatedSceneSourceKey = candidate.key;
-    return { sceneItems:[sceneItem], pairedLogItems:[pairedLog] };
+  function parseSceneMemoryRelevanceResponse(value, candidates) {
+    const raw = normalizeLineBreaks(String(value || '')).trim();
+    if (!raw) throw new Error('장면 기억 관련도 응답이 비어 있습니다.');
+    let parsed;
+    try { parsed = JSON.parse(raw); }
+    catch (_) { throw new Error('장면 기억 관련도 응답을 JSON으로 해석하지 못했습니다.'); }
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('장면 기억 관련도 응답 형식이 올바르지 않습니다.');
+    const key = String(parsed.key || '').trim();
+    const score = Number(parsed.score);
+    const reason = normalizeLineBreaks(String(parsed.reason || '')).replace(/\s+/g, ' ').trim().slice(0, 300);
+    if (!Number.isFinite(score) || score < 0 || score > 100) throw new Error('장면 기억 관련도는 0~100 숫자여야 합니다.');
+    if (!key && score === 0) return { candidate:null, score:0, reason };
+    const candidate = candidates.find(item => item.key === key);
+    if (!candidate) throw new Error('장면 기억 관련도 응답에 존재하지 않는 후보 KEY가 포함되었습니다.');
+    return { candidate, score:Math.round(score * 10) / 10, reason };
+  }
+
+  async function selectRelevantSceneMemory(room, contextText = '') {
+    if (!room?.aiContextLogRerankEnabled) return null;
+    try {
+      const cleanContext = stripAutomationNoise(contextText);
+      if (!cleanContext) return null;
+      const { slot, candidates } = sceneMemoryCandidateBlocks(room, cleanContext);
+      if (!slot || !candidates.length) return null;
+
+      const settings = aiFeatureSettings(loadAiSummarySettings(), 'context');
+      const provider = settings.provider;
+      const secret = readAiSecret(provider);
+      const candidateText = candidates.map(({ key, block }) => `[장면 후보]
+KEY=${key}
+제목=${block.heading}
+원문=${String(block.body || '').slice(0, 3200)}`).join('\n\n');
+      const prompt = `[현재 RP]와 각 [장면 후보]를 서로 독립적으로 비교해, 현재 턴의 관계·사건·감정 맥락을 이해하는 데 가장 직접적으로 필요한 과거 장면 하나를 고른다.
+
+관련도는 0~100으로 매긴다. 95점 이상은 그 장면이 없으면 현재 턴의 구체적인 과거 사건·약속·고백·갈등·화해·장소 회상 또는 관계 맥락을 놓칠 가능성이 매우 높은 경우에만 준다. 같은 인물 이름, 일반 감정 단어, 날짜, 비슷한 행동·문체·신체 묘사만 겹치는 경우에는 높은 점수를 주지 않는다. 현재 장면이 후보 없이도 충분히 이해되면 95점 미만이어야 한다.
+
+후보 전체를 비교한 뒤 최고 후보 하나의 KEY와 관련도, 짧은 근거만 반환한다. 적합한 후보가 전혀 없으면 key는 빈 문자열, score는 0으로 반환한다.
+
+[현재 RP]
+${String(cleanContext).slice(-12000)}
+
+[장면 기억 후보]
+${candidateText}
+
+JSON 하나만 출력:
+{"key":"SCENE_01","score":97.8,"reason":"현재 RP와 직접 이어지는 구체적 근거"}
+적합한 후보가 없을 때만 {"key":"","score":0,"reason":"직접 관련 없음"}으로 출력한다.`;
+      const systemInstruction = '현재 RP와 과거 장면 기억의 직접적인 연속성을 엄격하게 평가하는 선택기다. 인물명이나 일반 감정어 중복은 고득점 근거가 아니다. 설명 없이 지정된 JSON만 출력한다.';
+      const options = { feature:'context', room, responseJsonSchema:AI_SCENE_MEMORY_RESPONSE_SCHEMA, allowEmptyText:true, thinkingLevel:'low' };
+      const result = await callAiSummaryProvider(provider, settings, secret, systemInstruction, prompt, 1024, () => {}, options);
+      assertAiContextResponseComplete(result);
+      const selected = parseSceneMemoryRelevanceResponse(result.text, candidates);
+      if (!selected.candidate || selected.score < SCENE_MEMORY_RELEVANCE_THRESHOLD) return null;
+      const block = selected.candidate.block;
+      const sourceKey = `scene:${block.key}:${block.index}`;
+      return {
+        slotId:`scene-memory:${sourceKey}`,
+        sourceSlotId:'sceneMemory',
+        sourceKey,
+        autoType:'related-scene',
+        title:`장면 기억 ${block.fullDate}${block.events ? ` · ${block.events}` : ''}`,
+        group:'scene-memory',
+        content:`${SCENE_MEMORY_USAGE_RULES}\n\n[관련 장면 기억]\n\n${String(block.raw || '').trim()}`,
+        totalTurns:1,
+        usedTurns:0,
+        recallReason:`장면 관련도 ${selected.score.toFixed(1)}% · API 독립 판정${selected.reason ? ` · ${selected.reason}` : ''}`,
+        recallScore:selected.score,
+        sceneRelevanceScore:selected.score,
+        recallCoreScore:null,
+        recallCharacterScore:null,
+        recallRank:1,
+        recallCandidateCount:candidates.length,
+        matchedTerms:[],
+        matchedCoreTerms:[],
+        matchedCharacterTerms:[],
+        sceneDateKey:block.calendarDateKey,
+        sceneEvent:String(block.events || '').trim(),
+        logIndex:block.index,
+      };
+    } catch (error) {
+      // 장면 기억 판정 실패는 기존 로그·현재상태 주입을 막지 않습니다.
+      console.warn('[RP Manager] 장면 기억 관련도 판정 실패 · 이번 턴은 장면 기억을 주입하지 않습니다.', error);
+      return null;
+    }
+  }
+
+  async function refreshSceneMemoryToPending(room, contextText = '') {
+    if (!room?.pending) return null;
+    try {
+      // 이전 턴 장면과 과거 버전의 같은 일차 짝로그를 먼저 제거한 뒤 매 턴 새로 판정합니다.
+      room.pending.items = (Array.isArray(room.pending.items) ? room.pending.items : []).filter(item => !['related-scene','scene-paired-log'].includes(String(item?.autoType || '')));
+      const selected = await selectRelevantSceneMemory(room, contextText);
+      if (!selected) return null;
+      const active = activePendingItems(room.pending);
+      const limit = contextBudgetForCarrier(room, String(room.pending.originalText || '').length);
+      if (buildContextBlockFromItems([...active, selected]).length > limit) return null;
+      room.pending.items.push(selected);
+      return selected;
+    } catch (error) {
+      console.warn('[RP Manager] 장면 기억 자동 갱신 실패 · 기존 컨텍스트는 계속 유지합니다.', error);
+      return null;
+    }
   }
 
   function collectLogRecallCandidates(room, contextText = '') {
@@ -11210,12 +11297,10 @@ try {
       });
     }
     out.push(...storyTimelineInjectionItems(room));
-    const sceneRecall = collectSceneMemoryRecall(room, ctx);
-    out.push(...sceneRecall.sceneItems);
     const log = (room.slots || []).find(s => s.id === 'logSummary');
     if (log?.enabled && String(log.content || '').trim()) {
       const budget = contextBudget == null ? contextBudgetForPreview(room) : Number(contextBudget);
-      out.push(...logRecallItems(room, ctx, out, budget, sceneRecall.pairedLogItems));
+      out.push(...logRecallItems(room, ctx, out, budget));
     }
     return out;
   }
@@ -11499,10 +11584,9 @@ try {
     const hasTotal = item.recallScore !== null && item.recallScore !== undefined && item.recallScore !== '' && Number.isFinite(Number(item.recallScore));
     const hasCoreScore = item.recallCoreScore !== null && item.recallCoreScore !== undefined && item.recallCoreScore !== '' && Number.isFinite(Number(item.recallCoreScore));
     const hasCharacterScore = item.recallCharacterScore !== null && item.recallCharacterScore !== undefined && item.recallCharacterScore !== '' && Number.isFinite(Number(item.recallCharacterScore));
-    // 원본 관련로그 점수는 일치한 모든 고유 단어의 가중치를 누적하는 정렬용
-    // 원시값이라 상한이 없습니다. 장면 기억에서 이를 '적합도'처럼 표시하면
-    // 100점 척도로 오해되므로, 장면은 동일 점수로 순위를 정하되 근거와 순위만 노출합니다.
-    if (hasTotal && !isSceneMemory) {
+    if (hasTotal && isSceneMemory) {
+      bits.push(`장면 관련도 ${Number(item.recallScore).toFixed(1)}%`);
+    } else if (hasTotal) {
       const total = Number(item.recallScore);
       if (hasCoreScore && hasCharacterScore) {
         bits.push(`관련도 점수 ${total.toFixed(1)} = 핵심 ${Number(item.recallCoreScore).toFixed(1)} + 인물 ${Number(item.recallCharacterScore).toFixed(1)}`);
@@ -13073,7 +13157,6 @@ try {
         if (recalled.length) { items.push(...recalled); added += recalled.length; }
       }
     }
-    added += replacePendingSceneMemoryItems(room);
     return { added };
   }
 
@@ -13199,27 +13282,17 @@ try {
     return next.length;
   }
 
-  function replacePendingSceneMemoryItems(room) {
+  async function replacePendingSceneMemoryItems(room) {
     if (!room?.pending) return 0;
     const items = Array.isArray(room.pending.items) ? room.pending.items : (room.pending.items = []);
-    const previous = activePendingItems(room.pending).find(item => item?.autoType === 'related-scene');
     room.pending.items = items.filter(item => item?.slotId !== 'sceneMemory' && item?.autoType !== 'related-scene' && item?.autoType !== 'scene-paired-log');
-    const recall = collectSceneMemoryRecall(room, room.autoRecallContextText || '');
-    const sceneItem = recall.sceneItems[0];
+    const sceneItem = await selectRelevantSceneMemory(room, room.autoRecallContextText || '');
     if (!sceneItem) return 0;
-    if (previous && String(previous.sourceKey || '') === String(sceneItem.sourceKey || '')) {
-      sceneItem.usedTurns = Number(previous.usedTurns || 0);
-    }
+    const active = activePendingItems(room.pending);
+    const limit = contextBudgetForCarrier(room, String(room.pending.originalText || '').length);
+    if (buildContextBlockFromItems([...active, sceneItem]).length > limit) return 0;
     room.pending.items.push(sceneItem);
-    let added = 1;
-    for (const pairedLog of recall.pairedLogItems) {
-      const alreadyIncluded = room.pending.items.some(item =>
-        (item?.sourceSlotId === 'logSummary' || item?.group === 'log-auto')
-        && String(item.sourceKey || '').replace(/^auto-log:/, '') === String(pairedLog.sourceKey || '').replace(/^auto-log:/, '')
-      );
-      if (!alreadyIncluded) { room.pending.items.push(pairedLog); added++; }
-    }
-    return added;
+    return 1;
   }
 
   async function rebuildPendingLogItems(room, reason = 'log-mode-change') {
@@ -13238,7 +13311,7 @@ try {
       return true;
     }
     if (slot.id === 'sceneMemory') {
-      replacePendingSceneMemoryItems(room);
+      await replacePendingSceneMemoryItems(room);
       await syncPendingCarrier(room, reason === 'slot-content-edit' ? 'scene-memory-edit' : reason);
       return true;
     }
@@ -13282,7 +13355,7 @@ try {
       } else if (slot.id === 'sceneMemory') {
         if (enabled) room.pending.quickRemovedItems = quickRemovedPendingItems(room.pending).filter(item => item.sourceSlotId !== 'sceneMemory' && item.autoType !== 'scene-paired-log');
         if (!enabled) room.pending.items = items.filter(item => item.slotId !== 'sceneMemory' && item.sourceSlotId !== 'sceneMemory' && item.autoType !== 'scene-paired-log');
-        else replacePendingSceneMemoryItems(room);
+        else await replacePendingSceneMemoryItems(room);
       } else {
         if (enabled) {
           const key = pendingItemIdentity({ slotId:slot.id, group:slot.group });
@@ -13298,7 +13371,10 @@ try {
         }
       }
       await syncPendingCarrier(room, enabled ? 'manual-add' : 'manual-remove');
-      notify(enabled ? `‘${slot.title}’ 현재 주입에 추가 · ${retentionLabel(slot.retentionTurns)} 새로 시작` : `‘${slot.title}’ 현재 주입에서 제거`, 'success', 4200);
+      const slotNotice = slot.id === 'sceneMemory'
+        ? (enabled ? '장면 기억 자동 참조를 켰습니다. 현재 관련도 95% 이상인 장면만 주입됩니다.' : '장면 기억 자동 참조를 껐습니다.')
+        : (enabled ? `‘${slot.title}’ 현재 주입에 추가 · ${retentionLabel(slot.retentionTurns)} 새로 시작` : `‘${slot.title}’ 현재 주입에서 제거`);
+      notify(slotNotice, 'success', 4200);
     } catch (e) {
       slot.enabled = previousEnabled;
       if (room.pending) {
@@ -14132,14 +14208,15 @@ try {
 
   async function refreshAutomaticMemories(room, recentMessages, freshMessages = null) {
     const fresh = freshMessages || newMessagesSinceLastScan(room, recentMessages);
-    if (!fresh.length) return { detected: [], added: 0, reset: 0, logAdded: 0, freshCount: 0 };
+    if (!fresh.length) return { detected: [], added: 0, reset: 0, logAdded: 0, sceneAdded: 0, freshCount: 0 };
     const cleanFreshText = fresh.map(m => stripAutomationNoise(messageTextOf(m))).filter(Boolean).join('\n');
     if (cleanFreshText) room.autoRecallContextText = cleanFreshText.slice(-12000);
     const charResult = await autoDetectCharacters(room, fresh);
     const logAdded = await addAutoRelatedLogsToPending(room, cleanFreshText);
+    const sceneSelected = await refreshSceneMemoryToPending(room, cleanFreshText);
     await saveRoom(room);
     if (room.chatId === state.currentChatId) state.currentRoom = room;
-    return { ...charResult, logAdded, freshCount: fresh.length };
+    return { ...charResult, logAdded, sceneAdded:sceneSelected ? 1 : 0, freshCount: fresh.length };
   }
 
   async function armInjection(room) {
@@ -14168,6 +14245,8 @@ try {
     // 최초 주입에는 아직 pending이 없으므로, 갱신 경로와 별도로 AI 맥락 검토를 적용합니다.
     // API가 실패하면 이미 계산된 로컬 키워드 결과를 그대로 사용합니다.
     items = await rerankInitialRelatedLogItems(room, items, recallText, initialContextBudget);
+    const initialScene = await selectRelevantSceneMemory(room, recallText);
+    if (initialScene && buildContextBlockFromItems([...items, initialScene]).length <= initialContextBudget) items.push(initialScene);
     items = fitItemsToCarrierLimits(room, cleanOriginal, items);
     const contextBlock = buildContextBlockFromItems(items);
     if (!contextBlock) throw new Error('주입할 항목이 없습니다. 현재상태/캐릭터/기타 또는 날짜 로그의 직접 주입·최근·관련 자동 선택 설정을 확인해 주세요.');
@@ -14270,7 +14349,7 @@ try {
     const recentForAuto = await fetchRecentMessages(apiChatIdOf(room), APP.autoScanMessageLimit);
     const autoResult = countTurn
       ? await refreshAutomaticMemories(room, recentForAuto)
-      : { detected: [], added: 0, reset: 0, logAdded: 0, freshCount: 0 };
+      : { detected: [], added: 0, reset: 0, logAdded: 0, sceneAdded: 0, freshCount: 0 };
     if (room.pending) room.pending.items = p.items;
     refreshAutoRecentLogsToPending(room);
     const persistenceRepair = ensureDirectReleasePendingItems(room, p);
@@ -14338,6 +14417,7 @@ try {
       const autoBits = [];
       if (autoResult?.detected?.length) autoBits.push(`캐릭터 ${autoResult.detected.map(x => x.slot.title).join(', ')}`);
       if (autoResult?.logAdded) autoBits.push(`관련로그 ${autoResult.logAdded}개`);
+      if (autoResult?.sceneAdded) autoBits.push('장면 기억 1개');
       notify(`${rerollMove ? '리롤 컨텍스트 유지 완료' : '컨텍스트 자동 이동 완료'} ✓ · ${active.length}개 항목 유지 중${autoBits.length ? ` · 자동호출 ${autoBits.join(' / ')}` : ''}`, 'success', autoBits.length ? 4800 : 3200);
       renderModalIfOpen();
     }
@@ -14901,7 +14981,7 @@ try {
         const bridgeStatus = chatGptBridgeStatus();
         const effectiveUrl = String(room.chatGptUrlOverride || chatSettings.globalUrl || '');
         const chatGptCard = `<section class="rpcm-ai-card rpcm-chatgpt-settings"><h3>ChatGPT 웹 연동</h3><div class="rpcm-ai-grid"><label class="rpcm-ai-field" style="grid-column:1/-1"><span>전역 기본 대화방 URL · /c/ 주소</span><input id="rpcm-chatgpt-global-url" value="${esc(chatSettings.globalUrl || '')}" placeholder="https://chatgpt.com/c/..."></label><label class="rpcm-ai-field" style="grid-column:1/-1"><span>이 방 전용 URL override · 비우면 전역 기본값 사용</span><input id="rpcm-chatgpt-room-url" value="${esc(room.chatGptUrlOverride || '')}" placeholder="${esc(chatSettings.globalUrl || 'https://chatgpt.com/c/...')}"></label><label class="rpcm-api-context-toggle"><span><strong>현재상태 갱신 알림</strong><small>입력 패널 위 배너로만 알립니다.</small></span><input id="rpcm-chatgpt-reminder-enabled" type="checkbox" ${chatSettings.reminderEnabled ? 'checked' : ''}></label><label class="rpcm-ai-field"><span>알림 주기 · USER 턴</span><input id="rpcm-chatgpt-reminder-turns" type="number" min="1" max="1000" value="${chatSettings.reminderTurns}"></label></div><div class="rpcm-ai-connection-actions"><span class="rpcm-ai-auth-note">${effectiveUrl ? `사용 주소 · ${esc(effectiveUrl)}` : '대화방 URL을 저장해 주세요.'}${bridgeStatus?.message ? ` · 최근 상태: ${esc(bridgeStatus.message)}` : ''}</span><button type="button" class="rpcm-ai-btn" data-chatgpt-act="check">연결 확인</button></div><p class="rpcm-ai-help">날짜요약·현재상태는 외부 API를 호출하지 않습니다. 실제 ChatGPT 대화방에 TXT 자료와 짧은 실행 명령을 전달합니다.</p></section>`;
-        backdrop.innerHTML = `<div class="rpcm-ai-dialog rpcm-unified-api-dialog"><div class="rpcm-ai-head"><div><h2>⚙ ChatGPT 웹 · 보조 API 설정</h2><p>요약은 ChatGPT 웹으로, 타임라인·API 주입 판단은 기존 보조 API로 실행합니다.</p></div><div class="rpcm-ai-spacer"></div><button type="button" class="rpcm-ai-close" data-api-act="close">✕</button></div><div class="rpcm-ai-body">${chatGptCard}<section class="rpcm-ai-card"><h3>타임라인·주입 판단용 API 연결</h3><div class="rpcm-ai-grid"><label class="rpcm-ai-field"><span>연결 방식</span><select id="rpcm-api-provider">${providerOptions}</select></label>${provider === 'openai' ? `<label class="rpcm-ai-field"><span>OpenAI / 호환 API 주소</span><input id="rpcm-api-openai-url" value="${esc(settings.openaiBaseUrl || '')}" placeholder="https://api.openai.com/v1"></label>` : ''}${provider === 'vertex' ? `<label class="rpcm-ai-field"><span>Vertex 위치</span><input id="rpcm-api-vertex-location" value="${esc(settings.vertexLocation || 'global')}"></label><label class="rpcm-ai-field"><span>프로젝트 ID</span><input id="rpcm-api-vertex-project" value="${esc(settings.vertexProjectId || '')}"></label>` : ''}<label class="rpcm-ai-field rpcm-ai-secret" style="grid-column:1/-1"><span>${secretLabel}</span>${secretInput}</label></div><p class="rpcm-ai-help">인증 정보는 이 브라우저에만 저장되며 전체 백업에는 포함되지 않습니다.</p></section><section class="rpcm-ai-card"><h3>API 기능별 모델과 상태</h3><div class="rpcm-api-feature-list">${featureRow('timeline','전체 타임라인 초안 생성')}${featureRow('context','주입 후보 날짜로그 관련성 판단')}</div>${openAiModelList}${openAiModelHelp}<label class="rpcm-api-context-toggle"><span><strong>API 주입 판단 사용</strong><small>OFF면 API를 호출하지 않으며, 실패하면 기본 키워드 방식으로 자동 대체합니다.</small></span><input id="rpcm-api-context-enabled" type="checkbox" ${room.aiContextLogRerankEnabled ? 'checked' : ''}></label></section>${renderRoomAiUsageHtml(room)}<div class="rpcm-ai-status" id="rpcm-api-settings-status"></div></div><div class="rpcm-ai-foot"><button type="button" class="rpcm-ai-btn" data-api-act="test">보조 API 연결 테스트</button><button type="button" class="rpcm-ai-btn" data-api-act="close">취소</button><button type="button" class="rpcm-ai-btn primary" data-api-act="save">설정 저장</button></div></div>`;
+        backdrop.innerHTML = `<div class="rpcm-ai-dialog rpcm-unified-api-dialog"><div class="rpcm-ai-head"><div><h2>⚙ ChatGPT 웹 · 보조 API 설정</h2><p>요약은 ChatGPT 웹으로, 타임라인·API 주입 판단은 기존 보조 API로 실행합니다.</p></div><div class="rpcm-ai-spacer"></div><button type="button" class="rpcm-ai-close" data-api-act="close">✕</button></div><div class="rpcm-ai-body">${chatGptCard}<section class="rpcm-ai-card"><h3>타임라인·주입 판단용 API 연결</h3><div class="rpcm-ai-grid"><label class="rpcm-ai-field"><span>연결 방식</span><select id="rpcm-api-provider">${providerOptions}</select></label>${provider === 'openai' ? `<label class="rpcm-ai-field"><span>OpenAI / 호환 API 주소</span><input id="rpcm-api-openai-url" value="${esc(settings.openaiBaseUrl || '')}" placeholder="https://api.openai.com/v1"></label>` : ''}${provider === 'vertex' ? `<label class="rpcm-ai-field"><span>Vertex 위치</span><input id="rpcm-api-vertex-location" value="${esc(settings.vertexLocation || 'global')}"></label><label class="rpcm-ai-field"><span>프로젝트 ID</span><input id="rpcm-api-vertex-project" value="${esc(settings.vertexProjectId || '')}"></label>` : ''}<label class="rpcm-ai-field rpcm-ai-secret" style="grid-column:1/-1"><span>${secretLabel}</span>${secretInput}</label></div><p class="rpcm-ai-help">인증 정보는 이 브라우저에만 저장되며 전체 백업에는 포함되지 않습니다.</p></section><section class="rpcm-ai-card"><h3>API 기능별 모델과 상태</h3><div class="rpcm-api-feature-list">${featureRow('timeline','전체 타임라인 초안 생성')}${featureRow('context','관련 날짜로그·장면 기억 독립 판단')}</div>${openAiModelList}${openAiModelHelp}<label class="rpcm-api-context-toggle"><span><strong>API 주입 판단 사용</strong><small>OFF면 API를 호출하지 않습니다. 날짜로그 판단 실패는 기존 키워드 방식으로 대체하고, 장면 기억 판단 실패는 해당 턴에 주입하지 않습니다.</small></span><input id="rpcm-api-context-enabled" type="checkbox" ${room.aiContextLogRerankEnabled ? 'checked' : ''}></label></section>${renderRoomAiUsageHtml(room)}<div class="rpcm-ai-status" id="rpcm-api-settings-status"></div></div><div class="rpcm-ai-foot"><button type="button" class="rpcm-ai-btn" data-api-act="test">보조 API 연결 테스트</button><button type="button" class="rpcm-ai-btn" data-api-act="close">취소</button><button type="button" class="rpcm-ai-btn primary" data-api-act="save">설정 저장</button></div></div>`;
         backdrop.querySelector('#rpcm-api-provider').onchange = event => { rememberForm(); provider = event.target.value; settings.provider = provider; render(); };
       };
       const finish = value => { backdrop.remove(); resolve(value); };
@@ -16123,9 +16203,9 @@ try {
                   <div class="rpcm-tool-actions"><button type="button" class="rpcm-mini" id="rpcm-tools-api-test">API 연결 테스트</button><button type="button" class="rpcm-mini primary" id="rpcm-tools-api-open">API Key · 모델 · 저장 설정</button></div>
                 </section>
                 <section class="rpcm-tool-card">
-                  <div class="rpcm-tool-card-head"><div><h3>주입 관련 설정</h3><p>수동·고정 선택을 우선하며 API는 관련 날짜로그 후보만 추가 판단합니다.</p></div></div>
-                  <label class="rpcm-tool-toggle"><span><strong>API 주입 판단 사용</strong><small>오류·시간초과·키 미설정 시 기본 키워드 방식으로 자동 fallback</small></span><input id="rpcm-tools-api-context-enabled" type="checkbox" ${room.aiContextLogRerankEnabled ? 'checked' : ''}></label>
-                  <dl><div><dt>자동 주입 후보 선택</dt><dd>${room.autoLogRecallEnabled ? 'ON' : 'OFF'}</dd></div><div><dt>최근 / 관련 날짜</dt><dd>${Number(room.autoLogRecentBlocks) || APP.defaultRecentLogBlocks}개 / 최대 ${Number(room.autoLogRelatedBlocks) || APP.defaultRelatedLogBlocks}개</dd></div><div><dt>판단 실패 동작</dt><dd>기존 로컬 키워드 선택 유지</dd></div></dl>
+                  <div class="rpcm-tool-card-head"><div><h3>주입 관련 설정</h3><p>관련 날짜로그와 장면 기억을 서로 독립적으로 API 판단합니다.</p></div></div>
+                  <label class="rpcm-tool-toggle"><span><strong>API 주입 판단 사용</strong><small>날짜로그 실패는 기존 방식으로 대체하고 장면 기억 실패는 해당 턴에 주입하지 않음</small></span><input id="rpcm-tools-api-context-enabled" type="checkbox" ${room.aiContextLogRerankEnabled ? 'checked' : ''}></label>
+                  <dl><div><dt>자동 주입 후보 선택</dt><dd>${room.autoLogRecallEnabled ? 'ON' : 'OFF'}</dd></div><div><dt>최근 / 관련 날짜</dt><dd>${Number(room.autoLogRecentBlocks) || APP.defaultRecentLogBlocks}개 / 최대 ${Number(room.autoLogRelatedBlocks) || APP.defaultRelatedLogBlocks}개</dd></div><div><dt>장면 기억</dt><dd>관련도 ${SCENE_MEMORY_RELEVANCE_THRESHOLD}% 이상 · 최대 1개</dd></div></dl>
                   <div class="rpcm-tool-actions"><button type="button" class="rpcm-mini" id="rpcm-tools-memory-settings">기억 탭에서 자동 선택 세부 설정</button></div>
                 </section>
                 <section class="rpcm-tool-card rpcm-tool-card-wide">
@@ -16287,7 +16367,7 @@ try {
 
     function createSlotCard(slot, openDefault = false) {
       const d = document.createElement('details');
-      const inlineRetention = slot.group === 'character' || slot.group === 'extra' || slot.id === 'currentState' || slot.id === 'sceneMemory';
+      const inlineRetention = slot.group === 'character' || slot.group === 'extra' || slot.id === 'currentState';
       const initialGuideVariant = slot.id === 'logSummary' ? getLogSummaryGuideVariant(false) : '';
       const initialGuideModified = !!BASE_GUIDES[slot.id] && isGuideTextModified(slot.id, initialGuideVariant);
       d.className = `rpcm-slot${inlineRetention ? ' rpcm-slot-inline-retention' : ''}`;
@@ -16308,7 +16388,7 @@ try {
           <span class="rpcm-chevron">▶</span>
         </summary>
         <div class="rpcm-edit">
-          ${titleEditable ? `<input class="rpcm-title-input" value="${esc(slot.title)}" placeholder="항목 이름">` : `<div class="rpcm-fixed-note">${slot.id === 'currentState' ? '다음 업데이트 전까지 유효한 관계·정보격차·비밀·미해결 후크·지속 부상/소유물 등 지속 상태를 넣습니다. 통째로 주입합니다.' : slot.id === 'sceneMemory' ? '[N일차-사건명] 형식으로 장면 하나를 블록 하나에 보관합니다. 같은 일차의 복수 장면을 허용하며, 주입할 때 기존 관련로그 판정 로직으로 유사도 1위 장면과 같은 일차의 로그요약을 함께 불러옵니다.' : '날짜별 사건 요약 전체를 붙여넣습니다. 원문은 저장소로 보관하고, 날짜 블록 단위로 분해해 직접 주입·최근·관련·항상 주입 날짜만 골라 주입합니다. 최근·관련 로그 자동 선택을 꺼도 직접 주입·항상 주입 날짜는 유지됩니다.'}</div>${BASE_GUIDES[slot.id] ? `<div class="rpcm-guide-panel" hidden><div class="rpcm-guide-head"><span>GPT / Gemini용 업데이트 지침 · ${slot.id === 'logSummary' ? '종류별 수정 내용' : '수정 내용'}은 이 브라우저에 자동 저장됩니다.</span>${slot.id === 'logSummary' ? '<select class="rpcm-guide-variant" aria-label="날짜요약 지침 종류"><option value="general">일반용</option><option value="adult">성인용</option></select>' : ''}<button class="rpcm-guide-icon" type="button" data-guide-copy title="지침 복사" aria-label="지침 복사">${GUIDE_COPY_ICON}</button><button class="rpcm-guide-reset" type="button" data-guide-reset>기본값 복원</button></div><textarea class="rpcm-guide-textarea" data-rpcm-editor="true" spellcheck="false"></textarea></div>` : ''}`}
+          ${titleEditable ? `<input class="rpcm-title-input" value="${esc(slot.title)}" placeholder="항목 이름">` : `<div class="rpcm-fixed-note">${slot.id === 'currentState' ? '다음 업데이트 전까지 유효한 관계·정보격차·비밀·미해결 후크·지속 부상/소유물 등 지속 상태를 넣습니다. 통째로 주입합니다.' : slot.id === 'sceneMemory' ? '[N일차-사건명] 형식으로 장면 하나를 블록 하나에 보관합니다. 같은 일차의 복수 장면을 각각 독립 후보로 평가하며, API 장면 관련도 95% 이상인 최고 장면 1개만 매 턴 자동 참조합니다.' : '날짜별 사건 요약 전체를 붙여넣습니다. 원문은 저장소로 보관하고, 날짜 블록 단위로 분해해 직접 주입·최근·관련·항상 주입 날짜만 골라 주입합니다. 최근·관련 로그 자동 선택을 꺼도 직접 주입·항상 주입 날짜는 유지됩니다.'}</div>${BASE_GUIDES[slot.id] ? `<div class="rpcm-guide-panel" hidden><div class="rpcm-guide-head"><span>GPT / Gemini용 업데이트 지침 · ${slot.id === 'logSummary' ? '종류별 수정 내용' : '수정 내용'}은 이 브라우저에 자동 저장됩니다.</span>${slot.id === 'logSummary' ? '<select class="rpcm-guide-variant" aria-label="날짜요약 지침 종류"><option value="general">일반용</option><option value="adult">성인용</option></select>' : ''}<button class="rpcm-guide-icon" type="button" data-guide-copy title="지침 복사" aria-label="지침 복사">${GUIDE_COPY_ICON}</button><button class="rpcm-guide-reset" type="button" data-guide-reset>기본값 복원</button></div><textarea class="rpcm-guide-textarea" data-rpcm-editor="true" spellcheck="false"></textarea></div>` : ''}`}
           ${slot.group === 'character' ? `<div class="rpcm-auto-terms"><strong>자동 선택 감지어</strong> · ${esc(characterAutomaticTerms(slot).slice(0, 10).join(' · ') || '캐릭터 이름을 입력하면 자동 생성됩니다.')}${characterAutomaticTerms(slot).length > 10 ? ' · …' : ''}</div><div class="rpcm-alias-row"><input class="rpcm-alias-input" value="${esc((slot.aliases || []).join(', '))}" placeholder="자동 선택용 별칭 (주입 안 됨): 애칭·약칭·호칭"><label class="rpcm-auto-pin" title="RP 등장 여부와 관계없이 현재 주입을 계속 켜둡니다."><input type="checkbox" class="rpcm-auto-pinned" ${slot.autoPinned ? 'checked' : ''}> 📌 항상 주입 선택</label><label class="rpcm-auto-exclude" title="RP에 등장해도 자동으로 선택하지 않습니다. 직접 체크해 주입할 수 있습니다."><input type="checkbox" class="rpcm-auto-excluded" ${slot.autoExcluded ? 'checked' : ''}> 🚫 자동 선택 제외</label></div>` : ''}
           ${slot.id === 'logSummary' ? `<div class="rpcm-slot-options"><span>선택된 로그 유지 횟수</span><select class="rpcm-slot-retention" title="선택된 날짜로그를 앞으로 몇 번의 AI 응답에 연속 주입할지 설정 · 만료 후 자동 종료 · 주기 반복 아님">${retentionOptionsHtml(slot.retentionTurns)}</select><span>AI 응답마다 1턴 차감 · 만료 후 자동 종료 · 주기 반복 아님</span></div>` : ''}
           <div class="rpcm-editor-actions"><button type="button" class="rpcm-editor-action" data-editor-copy>내용 복사</button><button type="button" class="rpcm-editor-action" data-editor-select>전체 선택</button><button type="button" class="rpcm-editor-action" data-editor-clean>붙여넣기 정리</button><span class="rpcm-editor-hint">Ctrl+Z로 편집 되돌리기</span>${slot.group !== 'extra' ? `<button type="button" class="rpcm-editor-action rpcm-focus-toggle" data-editor-focus>크게 편집</button>` : ''}</div>
