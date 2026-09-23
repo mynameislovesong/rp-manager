@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽위시 RP Manager 개인화
 // @namespace    local.rp.context.manager.personal
-// @version      0.14.4
+// @version      0.15.0
 // @description  기존 RP 기억 관리 기능과 ChatGPT 웹 전송형 날짜요약·현재상태 갱신을 지원하는 개인화 버전입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -259,13 +259,13 @@
   // 버전별 키를 쓰면 구버전과 신버전이 동시에 설치됐을 때 둘 다 실행될 수 있습니다.
   // 모든 버전이 공유하는 고정 키로 중복 실행을 막습니다.
   if (window.__WISH_RP_MANAGER_LOADED__) return;
-  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.14.4-personal', loadedAt: Date.now() };
+  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.15.0-personal', loadedAt: Date.now() };
   // 같은 페이지에 남아 있는 v0.8.10 복사본이 뒤늦게 시작되는 경우도 차단합니다.
   window.__RP_MANAGER_0810_LOADED__ = true;
 
   const APP = {
     name: '🪽위시 RP Manager 개인화',
-    version: '0.14.4',
+    version: '0.15.0',
     dbName: 'RPContextManagerDB',
     dbVersion: 2,
     storeName: 'rooms',
@@ -3835,6 +3835,7 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
   const SLOT_TEMPLATE = [
     { id: 'currentState', title: '현재상태', group: 'fixed', enabled: true, content: '', retentionTurns: 5 },
     { id: 'logSummary', title: '로그요약', group: 'fixed', enabled: true, content: '', retentionTurns: 5 },
+    { id: 'sceneMemory', title: '장면 기억', group: 'fixed', enabled: true, content: '', retentionTurns: 5 },
     { id: 'extra-default', title: '기타', group: 'extra', enabled: false, content: '', retentionTurns: 5 },
   ];
 
@@ -4145,7 +4146,7 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
 
   function editorHeightPreference(slot) {
     const prefs = loadUiPrefs();
-    if (['currentState', 'logSummary'].includes(slot.id)) {
+    if (['currentState', 'logSummary', 'sceneMemory'].includes(slot.id)) {
       const shared = Number(prefs.editorHeights?.fixedMemory);
       if (Number.isFinite(shared) && shared >= 140 && shared <= 1200) return Math.round(shared);
       return 300;
@@ -4156,14 +4157,14 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
   }
 
   function rememberEditorHeight(slot, textarea) {
-    if (!slot || !textarea || !['currentState', 'logSummary'].includes(slot.id)) return;
+    if (!slot || !textarea || !['currentState', 'logSummary', 'sceneMemory'].includes(slot.id)) return;
     const height = Math.max(140, Math.min(1200, Math.round(textarea.getBoundingClientRect().height || 0)));
     if (!height) return;
     const prefs = loadUiPrefs();
-    prefs.editorHeights = { ...(prefs.editorHeights || {}), fixedMemory: height, currentState: height, logSummary: height };
+    prefs.editorHeights = { ...(prefs.editorHeights || {}), fixedMemory: height, currentState: height, logSummary: height, sceneMemory: height };
     saveUiPrefs(prefs);
     // 현재상태/로그요약 축소 편집창은 항상 같은 높이를 유지합니다.
-    state.modal?.querySelectorAll('.rpcm-slot[data-slot-id="currentState"] .rpcm-textarea, .rpcm-slot[data-slot-id="logSummary"] .rpcm-textarea').forEach(el => {
+    state.modal?.querySelectorAll('.rpcm-slot[data-slot-id="currentState"] .rpcm-textarea, .rpcm-slot[data-slot-id="logSummary"] .rpcm-textarea, .rpcm-slot[data-slot-id="sceneMemory"] .rpcm-textarea').forEach(el => {
       if (el !== textarea) el.style.height = `${height}px`;
     });
   }
@@ -5607,10 +5608,13 @@ try {
     currentState.group = 'fixed'; currentState.title = '현재상태';
     const logSummary = normalizeSlot(oldById.get('logSummary'), { ...SLOT_TEMPLATE[1], group: 'fixed', title: '로그요약' });
     logSummary.group = 'fixed'; logSummary.title = '로그요약';
+    const sceneMemory = normalizeSlot(oldById.get('sceneMemory'), { ...SLOT_TEMPLATE[2], group: 'fixed', title: '장면 기억' });
+    sceneMemory.group = 'fixed'; sceneMemory.title = '장면 기억';
+    sceneMemory.content = normalizeSceneMemoryBlocks(sceneMemory.content);
     const dynamic = [];
 
     for (const slot of old) {
-      if (!slot || ['currentState','logSummary'].includes(slot.id)) continue;
+      if (!slot || ['currentState','logSummary','sceneMemory'].includes(slot.id)) continue;
       const content = String(slot.content || '');
       if (slot.group === 'character' || slot.group === 'extra') {
         dynamic.push(normalizeSlot(slot, makeDynamicSlot(slot.group, slot.title || (slot.group === 'character' ? '캐릭터' : '기타'))));
@@ -5626,8 +5630,8 @@ try {
       }
     }
 
-    if (!dynamic.some(x => x.group === 'extra')) dynamic.push({ ...SLOT_TEMPLATE[2] });
-    room.slots = [currentState, logSummary, ...dynamic];
+    if (!dynamic.some(x => x.group === 'extra')) dynamic.push({ ...SLOT_TEMPLATE[3] });
+    room.slots = [currentState, logSummary, sceneMemory, ...dynamic];
     delete room.retentionTurns; // v0.6부터 유지 주기는 항목별로 관리
 
     // v0.7 자동 기억 호출 설정: 기존 방은 보수적으로 OFF에서 시작합니다.
@@ -7166,6 +7170,56 @@ try {
         sourceEnd: end,
       };
     });
+  }
+
+  function normalizeSceneMemoryBlocks(text) {
+    const src = normalizeLineBreaks(String(text || '')).trim();
+    if (!src) return '';
+    const blocks = parseDatedLogBlocks(src);
+    // 날짜를 추측하지 않고, 실제 N일차로 인식된 블록만 병합합니다.
+    // 그 밖의 자유 메모나 날짜 형식은 원문 그대로 남겨 기존 내용을 잃지 않습니다.
+    if (!blocks.length) return src;
+
+    const byDay = new Map();
+    for (const block of blocks.filter(item => item.isOrdinalDay && !item.sourceTimelineLabel)) {
+      const day = Number(block.ordinalDay);
+      let group = byDay.get(day);
+      if (!group) {
+        group = { day, events:[], eventKeys:new Set(), bodies:[] };
+        byDay.set(day, group);
+      }
+      for (const eventName of String(block.events || '').split(/[·ㆍ・]/).map(value => value.trim()).filter(Boolean)) {
+        const key = eventName.toLocaleLowerCase('ko-KR');
+        if (group.eventKeys.has(key)) continue;
+        group.eventKeys.add(key);
+        group.events.push(eventName);
+      }
+      const body = String(block.body || '').trim();
+      if (body) group.bodies.push(body);
+    }
+    if (!byDay.size) return src;
+
+    const renderGroup = group => `[${group.day}일차${group.events.length ? `-${group.events.join('·')}` : ''}]${group.bodies.length ? `\n${group.bodies.join('\n\n')}` : ''}`;
+    const allOrdinal = blocks.every(block => block.isOrdinalDay && !block.sourceTimelineLabel);
+    const prefix = src.slice(0, blocks[0].sourceStart).trim();
+    if (allOrdinal) {
+      return [prefix, ...[...byDay.values()].sort((a, b) => a.day - b.day).map(renderGroup)].filter(Boolean).join('\n\n');
+    }
+
+    const emittedDays = new Set();
+    const rebuilt = [];
+    if (prefix) rebuilt.push(prefix);
+    for (const block of blocks) {
+      if (!block.isOrdinalDay || block.sourceTimelineLabel) {
+        rebuilt.push(String(block.raw || '').trim());
+        continue;
+      }
+      const day = Number(block.ordinalDay);
+      if (emittedDays.has(day)) continue;
+      emittedDays.add(day);
+      rebuilt.push(renderGroup(byDay.get(day)));
+    }
+    return rebuilt.filter(Boolean).join('\n\n');
   }
 
   const CURRENT_STATE_SECTION_RULE = '━━━━━━━━━━━━━━━━━━━━';
@@ -9009,6 +9063,8 @@ try {
   }
 
   async function saveRoom(room) {
+    const sceneMemory = (room?.slots || []).find(slot => slot?.id === 'sceneMemory');
+    if (sceneMemory) sceneMemory.content = normalizeSceneMemoryBlocks(sceneMemory.content);
     room.updatedAt = nowIso();
     await new Promise((resolve, reject) => {
       const tx = state.db.transaction(APP.storeName, 'readwrite');
@@ -9772,6 +9828,9 @@ try {
       normalizeRoomSlots(room);
       let mode = 'view';
       let preview = null;
+      // 미리보기를 만든 실행 기준을 따로 보존합니다. API 초안이 남아 있어도
+      // 외부 점검/갱신 결과에 오래된 REF 실행정보를 잘못 재사용하지 않습니다.
+      let previewRun = null;
       let resultText = '';
       let previewFilter = 'changed';
       let dirty = false;
@@ -9802,10 +9861,29 @@ try {
       const selectedUnreviewedLogs = () => allUnreviewedLogs().filter(item => selectedStoryLogIds.has(String(item.meta.logId)));
       const apiImportOptionsFor = value => {
         const result = String(value || '').trim();
-        if (apiDraft?.run && String(apiDraft.run.timelineLabel) === String(activeLabel) && (/^\s*\{/.test(result) || /\bREF\s*=\s*(?:C\d+|NEW)/i.test(result))) return { run:apiDraft.run, timelineLabel:activeLabel };
+        const isJson = /^\s*\{/.test(result);
+        const isManualRefResult = /\[CARD\]/i.test(result) && /\bREF\s*=\s*(?:C\d+|NEW)/i.test(result);
         const manualRun = room.storyTimelineManualRun;
-        if (manualRun?.runId && manualRun.kind !== 'audit' && String(manualRun.timelineLabel) === String(activeLabel) && (/^\s*\{/.test(result) || /\bREF\s*=\s*(?:C\d+|NEW)/i.test(result))) return { run:manualRun, timelineLabel:activeLabel };
-        return { timelineLabel:activeLabel };
+        const currentSignature = storyTimelineMasterSignature(snapshotStoryTimelineCardsForLabel(room, activeLabel));
+        const manualRunCurrent = !!(manualRun?.runId
+          && manualRun.kind !== 'audit'
+          && String(manualRun.timelineLabel) === String(activeLabel)
+          && String(manualRun.masterSignature || '') === currentSignature);
+        if (isJson) {
+          if (apiDraft?.run && String(apiDraft.run.timelineLabel) === String(activeLabel)) return { run:apiDraft.run, timelineLabel:activeLabel, source:'api' };
+          if (manualRunCurrent) return { run:manualRun, timelineLabel:activeLabel, source:'manual' };
+          return { timelineLabel:activeLabel, source:'json-unmatched' };
+        }
+        if (isManualRefResult) {
+          if (manualRunCurrent) return { run:manualRun, timelineLabel:activeLabel, source:'manual' };
+          const refs = [...result.matchAll(/\bREF\s*=\s*([^\s\r\n]+)/gi)].map(match => String(match[1] || '').trim().toUpperCase());
+          const allNew = refs.length > 0 && refs.every(ref => ref === 'NEW');
+          if (allNew) return { run:createStoryTimelineRun(room, activeLabel, 'manual-replace', 'FULL'), timelineLabel:activeLabel, source:'manual-replace' };
+          if (manualRun?.runId && manualRun.kind !== 'audit' && String(manualRun.timelineLabel) === String(activeLabel)) {
+            return { run:manualRun, timelineLabel:activeLabel, source:'manual-stale' };
+          }
+        }
+        return { timelineLabel:activeLabel, source:'plain' };
       };
       const diffMap = () => new Map((room.storyTimelineLastDiff || []).map(item => [String(item.cardId), item.type]));
       const renderReadCards = (list, allowDelete = false, changes = diffMap()) => list.length ? list.map((card, index) => {
@@ -10010,7 +10088,7 @@ try {
         if (!button) return;
         const action = button.dataset.storyViewAct;
         if (action === 'close') { finish(dirty); return; }
-        if (action === 'view') { captureApiForm(false); mode = mode === 'guide' ? guideReturnMode : 'view'; preview = null; previewFilter = 'changed'; render(); return; }
+        if (action === 'view') { captureApiForm(false); mode = mode === 'guide' ? guideReturnMode : 'view'; preview = null; previewRun = null; previewFilter = 'changed'; render(); return; }
         if (action === 'help') { helpOpen = !helpOpen; settingsOpen = false; render(); return; }
         if (action === 'close-help') { helpOpen = false; render(); return; }
         if (action === 'guide') { captureApiForm(false); guideReturnMode = mode === 'api-update' ? 'api-update' : mode === 'audit' ? 'audit' : 'view'; mode = 'guide'; render(); return; }
@@ -10032,9 +10110,9 @@ try {
         }
         if (action === 'close-settings') { settingsOpen = false; render(); return; }
         if (action === 'update') { mode = 'api-update'; apiSections.add('range'); apiSections.add('result'); render(); await refreshReviewSnapshot(); return; }
-        if (action === 'audit') { mode = 'audit'; preview = null; auditDraft = null; apiStatus = ''; render(); await refreshReviewSnapshot(); return; }
-        if (action === 'return-update') { mode = 'api-update'; preview = null; previewFilter = 'changed'; render(); return; }
-        if (action === 'return-audit') { mode = 'audit'; preview = null; previewFilter = 'changed'; render(); return; }
+        if (action === 'audit') { mode = 'audit'; preview = null; previewRun = null; auditDraft = null; apiStatus = ''; render(); await refreshReviewSnapshot(); return; }
+        if (action === 'return-update') { mode = 'api-update'; preview = null; previewRun = null; previewFilter = 'changed'; render(); return; }
+        if (action === 'return-audit') { mode = 'audit'; preview = null; previewRun = null; previewFilter = 'changed'; render(); return; }
         if (action === 'toggle-api-section') { captureApiForm(false); const id = String(button.dataset.storySection || ''); if (apiSections.has(id)) apiSections.delete(id); else apiSections.add(id); render(); return; }
         if (action === 'toggle-month') { const section = button.closest('.rpcm-story-month'); if (!section) return; section.classList.toggle('is-open'); button.querySelector('span').textContent = `${section.classList.contains('is-open') ? '▾' : '▸'} ${button.querySelector('span').textContent.replace(/^[▾▸]\s*/, '')}`; return; }
         if (action === 'preview-changed') { previewFilter = 'changed'; render(); return; }
@@ -10118,7 +10196,7 @@ try {
         if (action === 'load-api-history') {
           const item = (room.storyTimelineApiHistory || []).find(entry => String(entry.id || '') === String(button.dataset.storyHistoryId || ''));
           if (!item) return;
-          apiDraft = item; room.storyTimelineApiDraft = item; resultText = String(item.finalText || item.rawResult || ''); updateMode = item.updateMode === 'rebuild' ? 'rebuild' : 'continue'; apiSections.add('result'); render(); return;
+          apiDraft = item; room.storyTimelineApiDraft = item; resultText = String(item.finalText || item.rawResult || ''); preview = null; previewRun = null; updateMode = item.updateMode === 'rebuild' ? 'rebuild' : 'continue'; apiSections.add('result'); render(); return;
         }
         if (action === 'api-generate') {
           if (!reviewSnapshot) { notify('RP 검토 범위를 확인한 뒤 다시 눌러 주세요.', 'warn'); return; }
@@ -10131,6 +10209,8 @@ try {
             room.storyTimelineApiDraft = apiDraft;
             room.storyTimelineApiHistory = [apiDraft, ...(room.storyTimelineApiHistory || []).filter(item => String(item.id) !== String(apiDraft.id))].slice(0, 10);
             resultText = apiDraft.finalText;
+            preview = null;
+            previewRun = null;
             apiStatus = apiDraft.noChange ? '검토 완료 · 타임라인 변경 없음' : `생성 완료 · ${apiDraft.usage.calls}회 호출 · ${formatAiCostUsd(apiDraft.usage.estimatedCostUsd)}`;
             apiSections.add('result'); dirty = true; await saveRoom(room);
           } catch (error) { const failure = classifyAiFailure(error); setAiFeatureStatus('timeline', 'error', apiSettings.provider, apiSettings.models?.[apiSettings.provider] || '', failure.category, failure.detail); apiStatus = `생성 실패 · ${failure.category} · ${friendlyAiErrorMessage(error)}`; }
@@ -10200,7 +10280,7 @@ try {
         if (action === 'edit-preview') {
           if (!preview) return;
           const returnMode = mode;
-          const run = returnMode === 'audit-preview' ? auditDraft?.run : (apiDraft?.run || room.storyTimelineManualRun || createStoryTimelineRun(room, activeLabel, 'manual-edit', 'FULL'));
+          const run = returnMode === 'audit-preview' ? auditDraft?.run : (previewRun || room.storyTimelineManualRun || createStoryTimelineRun(room, activeLabel, 'manual-edit', 'FULL'));
           const temporaryRoom = { ...room, activeLogTimeline:activeLabel, storyTimelineCards:(preview.cards || []).map(card => ({ ...card, timelineLabel:activeLabel, tags:[...(card.tags || [])] })), storyTimelineBackup:null };
           backdrop.remove();
           const edited = await openStoryTimelineEditorDialog(temporaryRoom);
@@ -10213,8 +10293,15 @@ try {
           mode = returnMode; render(); return;
         }
         if (action === 'parse') {
-          try { resultText = String(backdrop.querySelector('#rpcm-story-paste-text')?.value || ''); if (/^타임라인\s*변경\s*없음\s*$/.test(resultText.trim())) { notify('변경 없음 결과입니다. “변경 없음 · 검토 완료”를 눌러 주세요.', 'info', 4200); return; } preview = parseStoryTimelineImport(resultText, room, apiImportOptionsFor(resultText)); mode = 'preview'; render(); }
-          catch (error) { notify(`타임라인 결과 확인 실패: ${error.message}`, 'error', 6500); }
+          try {
+            resultText = String(backdrop.querySelector('#rpcm-story-paste-text')?.value || '');
+            if (/^타임라인\s*변경\s*없음\s*$/.test(resultText.trim())) { notify('변경 없음 결과입니다. “변경 없음 · 검토 완료”를 눌러 주세요.', 'info', 4200); return; }
+            const importOptions = apiImportOptionsFor(resultText);
+            preview = parseStoryTimelineImport(resultText, room, importOptions);
+            previewRun = importOptions.run || null;
+            mode = 'preview'; render();
+          }
+          catch (error) { previewRun = null; notify(`타임라인 결과 확인 실패: ${error.message}`, 'error', 6500); }
           return;
         }
         if (action === 'save-result') {
@@ -10223,12 +10310,14 @@ try {
             try {
               resultText = String(backdrop.querySelector('#rpcm-story-paste-text')?.value || resultText || '');
               if (/^타임라인\s*변경\s*없음\s*$/.test(resultText.trim())) { notify('변경이 없다면 “변경 없음 · 검토 완료”를 눌러 주세요.', 'info', 4200); return; }
-              preview = parseStoryTimelineImport(resultText, room, apiImportOptionsFor(resultText));
-            } catch (error) { notify(`타임라인 저장 실패: ${error.message}`, 'error', 6500); return; }
+              const importOptions = apiImportOptionsFor(resultText);
+              preview = parseStoryTimelineImport(resultText, room, importOptions);
+              previewRun = importOptions.run || null;
+            } catch (error) { previewRun = null; notify(`타임라인 저장 실패: ${error.message}`, 'error', 6500); return; }
           }
           const summary = diffSummary(preview.diff);
           if (!confirm(`현재 결과를 최신 전체 타임라인으로 저장할까요?\n\n${summary}\n전체 카드 ${cards().length} → ${preview.cards.length}`)) return;
-          const run = savingAudit ? auditDraft?.run : (apiDraft?.run || room.storyTimelineManualRun);
+          const run = savingAudit ? auditDraft?.run : previewRun;
           if (run) {
             try { assertStoryTimelineRunCurrent(room, run); }
             catch (error) { notify(error.message, 'error', 7000); return; }
@@ -10255,8 +10344,10 @@ try {
           }
           room.storyTimelineCarryoverTurnKeys = (completedScope?.reviewedTailKeys || apiDraft?.reviewScope?.reviewedTailKeys || room.storyTimelineCarryoverTurnKeys || []).map(String).slice(-40);
           room.storyTimelineApiDraft = null;
+          previewRun = null;
           if (room.storyTimelineManualRun?.runId === run?.runId) room.storyTimelineManualRun = null;
           if (hadPendingReview) room.storyTimelineUnreviewedTurnCount = 0;
+          await saveRoom(room);
           dirty = true; finish(true); return;
         }
       }, true);
@@ -10299,7 +10390,7 @@ try {
       backdrop.onkeydown = event => {
         if (event.key !== 'Escape') return;
         if (helpOpen || settingsOpen) { helpOpen = false; settingsOpen = false; render(); return; }
-        if (mode !== 'view') { captureApiForm(false); mode = 'view'; preview = null; render(); return; }
+        if (mode !== 'view') { captureApiForm(false); mode = 'view'; preview = null; previewRun = null; render(); return; }
         finish(dirty);
       };
       document.body.appendChild(backdrop);
@@ -14067,7 +14158,7 @@ try {
       .rpcm-slot summary{list-style:none;display:flex;align-items:center;gap:10px;padding:11px 12px;cursor:pointer;user-select:none}.rpcm-slot summary::-webkit-details-marker{display:none}.rpcm-slot summary:hover{background:#f8fafc}
       #rpcm-modal input[type=checkbox],#rpcm-lib-dialog-backdrop input[type=checkbox],#rpcm-log-dialog-backdrop input[type=checkbox],#rpcm-story-dialog-backdrop input[type=checkbox],#rpcm-story-view-backdrop input[type=checkbox],#rpcm-dup-dialog-backdrop input[type=radio]{accent-color:#0284c7}
       .rpcm-enable{width:18px;height:18px;accent-color:#0284c7}.rpcm-slot-name{font-size:13px;font-weight:750;flex:1 1 auto;min-width:0}.rpcm-slot.rpcm-slot-inline-retention .rpcm-slot-name{flex:1 1 auto}.rpcm-inline-retention{display:inline-flex;align-items:center;gap:5px;color:#66778a;font-size:10px;white-space:nowrap;cursor:default;flex:0 0 auto}.rpcm-inline-retention select{height:28px;border:1px solid #d8e2ec;border-radius:7px;background:#fff;color:#273444;padding:0 7px;font:10px/1 inherit;cursor:pointer}.rpcm-slot-count{font-size:11px;color:#66778a}.rpcm-chevron{font-size:12px;color:#666}.rpcm-slot[open] .rpcm-chevron{transform:rotate(90deg)}
-      .rpcm-edit{padding:0 12px 12px}.rpcm-title-input{width:100%;box-sizing:border-box;background:#fff;color:#273444;border:1px solid #d8e2ec;border-radius:8px;padding:8px 10px;font-size:12px;margin-bottom:8px}.rpcm-textarea{width:100%;box-sizing:border-box;min-height:160px;max-height:1200px;resize:vertical;background:#fff;color:#273444;border:1px solid #d8e2ec;border-radius:8px;padding:11px;font-size:13px;line-height:1.55;outline:none}.rpcm-textarea:focus,.rpcm-title-input:focus{border-color:#7dd3fc;box-shadow:0 0 0 2px rgba(56,189,248,.16)}.rpcm-slot[data-slot-id="currentState"] .rpcm-textarea:focus,.rpcm-slot[data-slot-id="logSummary"] .rpcm-textarea:focus{overscroll-behavior:contain}.rpcm-slot.is-search-hit{border-color:#38bdf8;box-shadow:0 0 0 2px rgba(56,189,248,.16)}
+      .rpcm-edit{padding:0 12px 12px}.rpcm-title-input{width:100%;box-sizing:border-box;background:#fff;color:#273444;border:1px solid #d8e2ec;border-radius:8px;padding:8px 10px;font-size:12px;margin-bottom:8px}.rpcm-textarea{width:100%;box-sizing:border-box;min-height:160px;max-height:1200px;resize:vertical;background:#fff;color:#273444;border:1px solid #d8e2ec;border-radius:8px;padding:11px;font-size:13px;line-height:1.55;outline:none}.rpcm-textarea:focus,.rpcm-title-input:focus{border-color:#7dd3fc;box-shadow:0 0 0 2px rgba(56,189,248,.16)}.rpcm-slot[data-slot-id="currentState"] .rpcm-textarea:focus,.rpcm-slot[data-slot-id="logSummary"] .rpcm-textarea:focus,.rpcm-slot[data-slot-id="sceneMemory"] .rpcm-textarea:focus{overscroll-behavior:contain}.rpcm-slot.is-search-hit{border-color:#38bdf8;box-shadow:0 0 0 2px rgba(56,189,248,.16)}
       .rpcm-editor-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 8px}.rpcm-editor-action{border:1px solid #d8e2ec;background:#fff;color:#66778a;border-radius:7px;padding:5px 8px;font-size:10px;cursor:pointer}.rpcm-editor-action:hover{color:#273444;background:#f8fafc}.rpcm-editor-action:disabled{opacity:.38;cursor:default}.rpcm-editor-action.rpcm-focus-toggle{margin-left:auto;color:#0369a1;border-color:#7dd3fc}.rpcm-editor-hint{color:#666;font-size:10px}
       #rpcm-detached-backdrop{position:fixed;inset:0;z-index:2147483646;background:rgba(51,65,85,.28);display:flex;align-items:center;justify-content:center;padding:3vh 3vw;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,"Pretendard",sans-serif}
       .rpcm-detached-editor{width:min(1800px,97vw);height:min(980px,95vh);min-height:560px;background:#fff;color:#273444;border:1px solid #7dd3fc;border-radius:16px;box-shadow:0 35px 120px rgba(51,65,85,.8);display:flex;flex-direction:column;overflow:hidden}
@@ -15160,6 +15251,7 @@ try {
               <div class="rpcm-story-launchbar${storyReviewDue ? ' is-review-due' : ''}"><div><strong>🧭 연속성 타임라인${room.storyTimelineReviewSettings?.menuBadge !== false && storyUnreviewedCount ? ` · ${storyUnreviewedCount}턴` : ''}${storyReviewDue ? ' · 검토 권장' : ''}</strong><span>${storyStats.count ? `${storyStats.count}개 카드 · 주입 ${storyStats.injectCount}개 · ${formatCount(storyStats.chars)}자` : '아직 카드 없음'} · 모든 세계선 통합 관리</span></div><button type="button" class="rpcm-mini" id="rpcm-story-manage">타임라인 보기</button></div>
               <div class="rpcm-auto-panel rpcm-log-auto-panel">${hasMultipleLogTimelines ? `<label class="rpcm-active-timeline-picker"><span class="rpcm-active-timeline-label">🗂️ 다음 저장</span><select id="rpcm-active-log-timeline-main" aria-label="다음 로그 저장 시간선">${logTimelineOptions}</select></label>` : ''}<label><input type="checkbox" id="rpcm-auto-log" ${room.autoLogRecallEnabled ? 'checked' : ''}> 최근·관련 로그 자동 선택</label><label>최근 날짜 <select id="rpcm-auto-log-recent"><option value="1" ${Number(room.autoLogRecentBlocks)===1?'selected':''}>1개</option><option value="2" ${Number(room.autoLogRecentBlocks)!==1?'selected':''}>2개</option></select></label><label>관련 날짜 최대 <select id="rpcm-auto-log-related"><option value="1" ${Number(room.autoLogRelatedBlocks)===1?'selected':''}>1개</option><option value="2" ${Number(room.autoLogRelatedBlocks)===2?'selected':''}>2개</option><option value="3" ${Number(room.autoLogRelatedBlocks)===3?'selected':''}>3개</option><option value="4" ${Number(room.autoLogRelatedBlocks)===4?'selected':''}>4개</option></select></label><button type="button" class="rpcm-lib-small" id="rpcm-log-date-fix">🛠 날짜 수정</button><button type="button" class="rpcm-lib-small" id="rpcm-log-manage">🗓️ 로그 관리${manualLogStats.count ? ` (직접 ${manualLogStats.count})` : ''}</button></div><div class="rpcm-log-help"><b>자동 선택 ON</b>=최근 날짜와 현재 RP에 관련된 날짜를 자동으로 골라 주입 · <b>OFF</b>=직접 주입·📌항상 주입 날짜만 유지 · 날짜 블록이 인식되면 로그요약 원문 전체를 통째로 주입하지 않습니다.</div>${manualLogStats.count ? `<div class="rpcm-log-help"><b>직접 주입 중</b> ${manualLogStats.count}개 · ${formatCount(manualLogStats.chars)}자 · 즐겨찾기·항상 주입·직접 주입 로그에서 빠르게 넣고 뺄 수 있습니다.</div>` : ''}
               <div id="rpcm-log-summary-slot"></div>
+              <div id="rpcm-scene-memory-slot"></div>
             </div>
 
             <div class="rpcm-section" id="rpcm-section-character">
@@ -15207,6 +15299,7 @@ try {
 
     const currentStateWrap = overlay.querySelector('#rpcm-current-state-slot');
     const logSummaryWrap = overlay.querySelector('#rpcm-log-summary-slot');
+    const sceneMemoryWrap = overlay.querySelector('#rpcm-scene-memory-slot');
     const charWrap = overlay.querySelector('#rpcm-character-slots');
     const extraWrap = overlay.querySelector('#rpcm-extra-slots');
 
@@ -15345,7 +15438,7 @@ try {
 
     function createSlotCard(slot, openDefault = false) {
       const d = document.createElement('details');
-      const inlineRetention = slot.group === 'character' || slot.group === 'extra' || slot.id === 'currentState';
+      const inlineRetention = slot.group === 'character' || slot.group === 'extra' || slot.id === 'currentState' || slot.id === 'sceneMemory';
       const initialGuideVariant = slot.id === 'logSummary' ? getLogSummaryGuideVariant(false) : '';
       const initialGuideModified = !!BASE_GUIDES[slot.id] && isGuideTextModified(slot.id, initialGuideVariant);
       d.className = `rpcm-slot${inlineRetention ? ' rpcm-slot-inline-retention' : ''}`;
@@ -15357,7 +15450,7 @@ try {
       d.innerHTML = `
         <summary>
           <input class="rpcm-enable" type="checkbox" ${slot.enabled ? 'checked' : ''} title="${slot.group === 'character' ? '현재 주입 여부 · 자동 선택 대상 지정이 아닙니다.' : '현재 주입 여부'}" aria-label="${esc(slot.title)} 현재 주입 여부">
-          <span class="rpcm-slot-name">${slot.id === 'currentState' ? '🧭 ' : slot.id === 'logSummary' ? '🗓️ ' : ''}${esc(slot.title)}</span>
+          <span class="rpcm-slot-name">${slot.id === 'currentState' ? '🧭 ' : slot.id === 'logSummary' ? '🗓️ ' : slot.id === 'sceneMemory' ? '🎞️ ' : ''}${esc(slot.title)}</span>
           ${inlineRetention ? `<label class="rpcm-inline-retention" title="호출 후 앞으로 몇 번의 AI 응답에 연속 주입할지 선택 · 주기 반복 아님"><span>연속 유지</span><select class="rpcm-slot-retention" aria-label="${esc(slot.title)} 연속 유지 턴">${retentionOptionsHtml(slot.retentionTurns)}</select></label>` : ''}
           ${BASE_GUIDES[slot.id] ? `<button class="rpcm-guide-toggle${initialGuideModified ? ' is-modified' : ''}" type="button" title="GPT/Gemini에 복사해 쓸 수 있는 업데이트 지침">지침</button>` : ''}
           ${pendingItem ? `<span class="rpcm-slot-remain">${esc(remainingLabelForItem(pendingItem))}</span>` : ''}
@@ -15366,7 +15459,7 @@ try {
           <span class="rpcm-chevron">▶</span>
         </summary>
         <div class="rpcm-edit">
-          ${titleEditable ? `<input class="rpcm-title-input" value="${esc(slot.title)}" placeholder="항목 이름">` : `<div class="rpcm-fixed-note">${slot.id === 'currentState' ? '다음 업데이트 전까지 유효한 관계·정보격차·비밀·미해결 후크·지속 부상/소유물 등 지속 상태를 넣습니다. 통째로 주입합니다.' : '날짜별 사건 요약 전체를 붙여넣습니다. 원문은 저장소로 보관하고, 날짜 블록 단위로 분해해 직접 주입·최근·관련·항상 주입 날짜만 골라 주입합니다. 최근·관련 로그 자동 선택을 꺼도 직접 주입·항상 주입 날짜는 유지됩니다.'}</div>${BASE_GUIDES[slot.id] ? `<div class="rpcm-guide-panel" hidden><div class="rpcm-guide-head"><span>GPT / Gemini용 업데이트 지침 · ${slot.id === 'logSummary' ? '종류별 수정 내용' : '수정 내용'}은 이 브라우저에 자동 저장됩니다.</span>${slot.id === 'logSummary' ? '<select class="rpcm-guide-variant" aria-label="날짜요약 지침 종류"><option value="general">일반용</option><option value="adult">성인용</option></select>' : ''}<button class="rpcm-guide-icon" type="button" data-guide-copy title="지침 복사" aria-label="지침 복사">${GUIDE_COPY_ICON}</button><button class="rpcm-guide-reset" type="button" data-guide-reset>기본값 복원</button></div><textarea class="rpcm-guide-textarea" data-rpcm-editor="true" spellcheck="false"></textarea></div>` : ''}`}
+          ${titleEditable ? `<input class="rpcm-title-input" value="${esc(slot.title)}" placeholder="항목 이름">` : `<div class="rpcm-fixed-note">${slot.id === 'currentState' ? '다음 업데이트 전까지 유효한 관계·정보격차·비밀·미해결 후크·지속 부상/소유물 등 지속 상태를 넣습니다. 통째로 주입합니다.' : slot.id === 'sceneMemory' ? '[N일차-사건명·사건명] 형식으로 보관합니다. 같은 일차 블록은 저장할 때 하나로 합치고 기존 내용은 이어 붙입니다. 생성·추출 지침은 아직 연결하지 않습니다.' : '날짜별 사건 요약 전체를 붙여넣습니다. 원문은 저장소로 보관하고, 날짜 블록 단위로 분해해 직접 주입·최근·관련·항상 주입 날짜만 골라 주입합니다. 최근·관련 로그 자동 선택을 꺼도 직접 주입·항상 주입 날짜는 유지됩니다.'}</div>${BASE_GUIDES[slot.id] ? `<div class="rpcm-guide-panel" hidden><div class="rpcm-guide-head"><span>GPT / Gemini용 업데이트 지침 · ${slot.id === 'logSummary' ? '종류별 수정 내용' : '수정 내용'}은 이 브라우저에 자동 저장됩니다.</span>${slot.id === 'logSummary' ? '<select class="rpcm-guide-variant" aria-label="날짜요약 지침 종류"><option value="general">일반용</option><option value="adult">성인용</option></select>' : ''}<button class="rpcm-guide-icon" type="button" data-guide-copy title="지침 복사" aria-label="지침 복사">${GUIDE_COPY_ICON}</button><button class="rpcm-guide-reset" type="button" data-guide-reset>기본값 복원</button></div><textarea class="rpcm-guide-textarea" data-rpcm-editor="true" spellcheck="false"></textarea></div>` : ''}`}
           ${slot.group === 'character' ? `<div class="rpcm-auto-terms"><strong>자동 선택 감지어</strong> · ${esc(characterAutomaticTerms(slot).slice(0, 10).join(' · ') || '캐릭터 이름을 입력하면 자동 생성됩니다.')}${characterAutomaticTerms(slot).length > 10 ? ' · …' : ''}</div><div class="rpcm-alias-row"><input class="rpcm-alias-input" value="${esc((slot.aliases || []).join(', '))}" placeholder="자동 선택용 별칭 (주입 안 됨): 애칭·약칭·호칭"><label class="rpcm-auto-pin" title="RP 등장 여부와 관계없이 현재 주입을 계속 켜둡니다."><input type="checkbox" class="rpcm-auto-pinned" ${slot.autoPinned ? 'checked' : ''}> 📌 항상 주입 선택</label><label class="rpcm-auto-exclude" title="RP에 등장해도 자동으로 선택하지 않습니다. 직접 체크해 주입할 수 있습니다."><input type="checkbox" class="rpcm-auto-excluded" ${slot.autoExcluded ? 'checked' : ''}> 🚫 자동 선택 제외</label></div>` : ''}
           ${slot.id === 'logSummary' ? `<div class="rpcm-slot-options"><span>선택된 로그 유지 횟수</span><select class="rpcm-slot-retention" title="선택된 날짜로그를 앞으로 몇 번의 AI 응답에 연속 주입할지 설정 · 만료 후 자동 종료 · 주기 반복 아님">${retentionOptionsHtml(slot.retentionTurns)}</select><span>AI 응답마다 1턴 차감 · 만료 후 자동 종료 · 주기 반복 아님</span></div>` : ''}
           <div class="rpcm-editor-actions"><button type="button" class="rpcm-editor-action" data-editor-copy>내용 복사</button><button type="button" class="rpcm-editor-action" data-editor-select>전체 선택</button><button type="button" class="rpcm-editor-action" data-editor-clean>붙여넣기 정리</button><span class="rpcm-editor-hint">Ctrl+Z로 편집 되돌리기</span>${slot.group !== 'extra' ? `<button type="button" class="rpcm-editor-action rpcm-focus-toggle" data-editor-focus>크게 편집</button>` : ''}</div>
@@ -15411,16 +15504,25 @@ try {
         ta._rpcmCommitLogTimeline = commitLogTimeline;
         ta.addEventListener('blur', commitLogTimeline);
       }
+      if (slot.id === 'sceneMemory') {
+        ta.addEventListener('blur', () => {
+          const normalized = normalizeSceneMemoryBlocks(ta.value);
+          if (normalized === ta.value) return;
+          ta.value = normalized;
+          slot.content = normalized;
+          ta.dispatchEvent(new Event('input', { bubbles:true }));
+        });
+      }
       const commitTextareaValue = () => {
         ta.dispatchEvent(new Event('input', { bubbles:true }));
       };
-      if (['currentState', 'logSummary'].includes(slot.id)) {
+      if (['currentState', 'logSummary', 'sceneMemory'].includes(slot.id)) {
         ta.addEventListener('pointerup', () => { if (!isMobileManagerLayout()) rememberEditorHeight(slot, ta); });
         ta.addEventListener('keyup', event => { if (!isMobileManagerLayout() && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) rememberEditorHeight(slot, ta); });
       }
       // 현재상태/로그요약은 한 번 클릭해 포커스된 동안에만 textarea 내부를 스크롤합니다.
       // 포커스되지 않은 축소 편집창 위에서는 휠이 RP Manager 본문 스크롤로 이어집니다.
-      if (['currentState', 'logSummary'].includes(slot.id)) {
+      if (['currentState', 'logSummary', 'sceneMemory'].includes(slot.id)) {
         ta.addEventListener('wheel', event => {
           const body = state.modal?.querySelector('.rpcm-body');
           if (!body || document.querySelector('#rpcm-detached-backdrop')) return;
@@ -15660,6 +15762,7 @@ try {
     fixed.forEach(slot => {
       if (slot.id === 'currentState') currentStateWrap?.appendChild(createSlotCard(slot, true));
       else if (slot.id === 'logSummary') logSummaryWrap?.appendChild(createSlotCard(slot, true));
+      else if (slot.id === 'sceneMemory') sceneMemoryWrap?.appendChild(createSlotCard(slot, true));
     });
     if (!chars.length) charWrap.innerHTML = `<div class="rpcm-empty">아직 캐릭터 설정이 없습니다. 위의 ‘＋ 캐릭터 추가’를 눌러 인물별로 등록하세요.</div>`;
     else chars.forEach(slot => charWrap.appendChild(createSlotCard(slot, false)));
@@ -15858,15 +15961,15 @@ try {
 
       for (const slot of room.slots || []) {
         const content = String(slot.content || '');
-        if (slot.id === 'logSummary') {
+        if (slot.id === 'logSummary' || slot.id === 'sceneMemory') {
           const blocks = parseDatedLogBlocks(content);
           if (blocks.length) {
             for (const block of blocks) {
-              addSearchSource(slot, block.raw, block.sourceStart, block.titleText || slot.title, block.isUnknown ? '날짜 미상' : '날짜로그');
+              addSearchSource(slot, block.raw, block.sourceStart, block.titleText || slot.title, slot.id === 'sceneMemory' ? '장면 기억' : block.isUnknown ? '날짜 미상' : '날짜로그');
               if (searchMatches.length >= 2000) break;
             }
           } else {
-            addSearchSource(slot, content, 0, slot.title || '로그요약', '로그요약');
+            addSearchSource(slot, content, 0, slot.title || (slot.id === 'sceneMemory' ? '장면 기억' : '로그요약'), slot.id === 'sceneMemory' ? '장면 기억' : '로그요약');
           }
         } else {
           addSearchSource(slot, content, 0, slot.title || slot.id, slot.group === 'character' ? '캐릭터' : slot.group === 'extra' ? '기타' : slot.id === 'currentState' ? '현재상태' : '메모');
