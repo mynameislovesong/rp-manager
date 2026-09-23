@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽위시 RP Manager 개인화
 // @namespace    local.rp.context.manager.personal
-// @version      0.15.2
+// @version      0.15.3
 // @description  기존 RP 기억 관리 기능과 ChatGPT 웹 전송형 날짜요약·현재상태 갱신을 지원하는 개인화 버전입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -259,13 +259,13 @@
   // 버전별 키를 쓰면 구버전과 신버전이 동시에 설치됐을 때 둘 다 실행될 수 있습니다.
   // 모든 버전이 공유하는 고정 키로 중복 실행을 막습니다.
   if (window.__WISH_RP_MANAGER_LOADED__) return;
-  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.15.2-personal', loadedAt: Date.now() };
+  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.15.3-personal', loadedAt: Date.now() };
   // 같은 페이지에 남아 있는 v0.8.10 복사본이 뒤늦게 시작되는 경우도 차단합니다.
   window.__RP_MANAGER_0810_LOADED__ = true;
 
   const APP = {
     name: '🪽위시 RP Manager 개인화',
-    version: '0.15.2',
+    version: '0.15.3',
     dbName: 'RPContextManagerDB',
     dbVersion: 2,
     storeName: 'rooms',
@@ -4972,6 +4972,40 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
     return { turns:(turns || []).slice(index + 1), startIndex:index + 1, anchorMissing:false, checkpointKey:key };
   }
 
+  function analyzeChatGptOrdinalDays(turns) {
+    let activeDay = null;
+    const detectedDays = new Set();
+    const entries = (turns || []).map((turn, index) => {
+      const explicitDay = Number(turn?.ordinalDay)
+        || extractTopOrdinalDay(turn?.userText)
+        || extractTopOrdinalDay(turn?.assistantText)
+        || null;
+      if (explicitDay) {
+        activeDay = explicitDay;
+        detectedDays.add(explicitDay);
+      }
+      return { turn, index, day:activeDay, explicitDay };
+    });
+    return { entries, days:[...detectedDays].sort((a, b) => a - b) };
+  }
+
+  function chatGptDateSummaryRangeHint(room) {
+    const range = room?.chatGptDateSummaryRange;
+    const start = Number(range?.startDay || 0);
+    const end = Number(range?.endDay || 0);
+    return start > 0 && end >= start ? `${start}~${end}일차 갱신` : '일차 범위 선택';
+  }
+
+  function chatGptCurrentStateTurnHint(room) {
+    const checkpointOrdinal = Math.max(0, Number(room?.chatGptCurrentStateCheckpoint?.turnOrdinal) || 0);
+    const snapshot = state.chatGptReminderSnapshot;
+    if (snapshot && String(snapshot.roomId || '') === String(room?.chatId || '') && !snapshot.anchorMissing) {
+      const latestOrdinal = checkpointOrdinal + Math.max(0, Number(snapshot.elapsed) || 0);
+      if (latestOrdinal > 0) return `T${latestOrdinal} 갱신`;
+    }
+    return checkpointOrdinal > 0 ? `T${checkpointOrdinal} 갱신` : '현재 턴 갱신';
+  }
+
   async function loadChatGptRpTurns(room) {
     const chatId = apiChatIdOf(room);
     if (!chatId) throw new Error('현재 채팅방 ID를 찾지 못했습니다.');
@@ -4983,7 +5017,7 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
 
   function formatChatGptRpTurns(turns, startOrdinal = 1) {
     return (turns || []).map((turn, index) => {
-      const ordinal = startOrdinal + index;
+      const ordinal = Number(turn?._chatGptSourceOrdinal) || startOrdinal + index;
       return `[USER TURN T${ordinal}]\nUSER:\n${String(turn.userText || '').trim()}\n\nCHARACTER/assistant:\n${String(turn.assistantText || '').trim()}`;
     }).join('\n\n━━━━━━━━━━━━━━━━━━━━\n\n');
   }
@@ -4994,10 +5028,12 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
 
   function makeChatGptTransferPayload(room, type, allTurns, selection, targetUrl) {
     const isCurrentState = type === 'currentState';
-    const selectedTurns = allTurns.slice(selection.startIndex, selection.endIndex + 1);
+    const selectedTurns = Array.isArray(selection?.turns)
+      ? selection.turns
+      : allTurns.slice(selection.startIndex, selection.endIndex + 1);
     if (!selectedTurns.length) throw new Error('전송할 완료 RP 대화가 없습니다.');
-    const startOrdinal = selection.startIndex + 1;
-    const endOrdinal = selection.endIndex + 1;
+    const startOrdinal = Math.max(1, Number(selection?.startOrdinal) || Number(selection?.startIndex) + 1);
+    const endOrdinal = Math.max(startOrdinal, Number(selection?.endOrdinal) || Number(selection?.endIndex) + 1);
     const range = `T${startOrdinal}-T${endOrdinal}`;
     const roomLabel = safeBridgeFilePart(room?.label || shortId(room?.chatId));
     const logText = formatChatGptRpTurns(selectedTurns, startOrdinal);
@@ -5016,7 +5052,7 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
       sourceUrl:location.href,
       sourceChatId:String(room?.chatId || ''),
       sourceRoomLabel:String(room?.label || ''),
-      range:{ startOrdinal, endOrdinal, startKey:String(selectedTurns[0]?.key || ''), endKey:String(selectedTurns[selectedTurns.length - 1]?.key || ''), turnCount:selectedTurns.length },
+      range:{ startOrdinal, endOrdinal, startDay:Number(selection?.startDay) || null, endDay:Number(selection?.endDay) || null, startKey:String(selectedTurns[0]?.key || ''), endKey:String(selectedTurns[selectedTurns.length - 1]?.key || ''), turnCount:selectedTurns.length },
       files:[
         { name:`RP_${kind}_${range}_${roomLabel}.txt`, mimeType:'text/plain;charset=utf-8', content:logText },
         { name:`RP_${memoryLabel}_${roomLabel}.txt`, mimeType:'text/plain;charset=utf-8', content:memory || '(현재 저장된 내용 없음)' },
@@ -5039,6 +5075,7 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
   }
 
   async function openChatGptTransferDialog(room, type = 'currentState') {
+    const isCurrentState = type === 'currentState';
     const settings = loadChatGptWebSettings();
     const targetUrl = chatGptRoomUrl(room, settings);
     if (!targetUrl) {
@@ -5050,7 +5087,7 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
     const backdrop = document.createElement('div');
     backdrop.id = 'rpcm-chatgpt-transfer-backdrop';
     backdrop.className = 'rpcm-unified-api-backdrop';
-    backdrop.innerHTML = `<div class="rpcm-ai-dialog rpcm-unified-api-dialog"><div class="rpcm-ai-head"><div><h2>${type === 'currentState' ? '🧭 ChatGPT로 현재상태' : '🗓️ ChatGPT로 날짜요약'}</h2><p>실제 RP 원문·저장된 기억·사용자가 수정한 지침을 TXT로 첨부합니다.</p></div><div class="rpcm-ai-spacer"></div><button type="button" class="rpcm-ai-close" data-chatgpt-transfer="close">✕</button></div><div class="rpcm-ai-body"><section class="rpcm-ai-card"><h3>RP 범위 불러오는 중…</h3><div class="rpcm-ai-status" id="rpcm-chatgpt-transfer-status">완료된 USER↔CHARACTER 대화를 확인하고 있습니다.</div></section></div><div class="rpcm-ai-foot"><button type="button" class="rpcm-ai-btn" data-chatgpt-transfer="close">취소</button><button type="button" class="rpcm-ai-btn primary" data-chatgpt-transfer="send" disabled>ChatGPT로 보내기</button></div></div>`;
+    backdrop.innerHTML = `<div class="rpcm-ai-dialog rpcm-unified-api-dialog"><div class="rpcm-ai-head"><div><h2>${isCurrentState ? '🧭 ChatGPT로 현재상태' : '🗓️ 날짜요약 범위 선택'}</h2><p>실제 RP 원문·저장된 기억·사용자가 수정한 지침을 TXT로 첨부합니다.</p></div><div class="rpcm-ai-spacer"></div><button type="button" class="rpcm-ai-close" data-chatgpt-transfer="close">✕</button></div><div class="rpcm-ai-body"><section class="rpcm-ai-card"><h3>RP 범위 불러오는 중…</h3><div class="rpcm-ai-status" id="rpcm-chatgpt-transfer-status">완료된 USER↔CHARACTER 대화를 확인하고 있습니다.</div></section></div><div class="rpcm-ai-foot"><button type="button" class="rpcm-ai-btn" data-chatgpt-transfer="close">취소</button><button type="button" class="rpcm-ai-btn primary" data-chatgpt-transfer="send" disabled>ChatGPT로 보내기</button></div></div>`;
     document.body.appendChild(backdrop);
     const close = () => backdrop.remove();
     backdrop.querySelectorAll('[data-chatgpt-transfer="close"]').forEach(button => button.onclick = close);
@@ -5060,41 +5097,94 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
       allTurns = await loadChatGptRpTurns(room);
       if (!allTurns.length) throw new Error('완료된 RP 대화를 찾지 못했습니다.');
       const checkpoint = turnsAfterCheckpoint(allTurns, room);
-      if (type === 'currentState' && checkpoint.checkpointKey && !checkpoint.anchorMissing && !checkpoint.turns.length) {
+      if (isCurrentState && checkpoint.checkpointKey && !checkpoint.anchorMissing && !checkpoint.turns.length) {
         throw new Error('마지막 현재상태 갱신 완료 지점 이후 새 RP 대화가 없습니다.');
       }
-      const defaultStart = type === 'currentState'
-        ? checkpoint.startIndex
-        : Math.max(0, (() => {
-            const legacyKey = String(room?.aiSummaryLastAppliedTurnKeys?.logSummary || '');
-            const legacyIndex = legacyKey ? allTurns.findIndex(turn => String(turn.key) === legacyKey) : -1;
-            return legacyIndex >= 0 ? legacyIndex + 1 : allTurns.length - 30;
-          })());
-      const startOrdinal = Math.min(allTurns.length, defaultStart + 1);
-      const endOrdinal = allTurns.length;
-      const checkpointNote = type === 'currentState'
-        ? checkpoint.anchorMissing
+      let dayAnalysis = null;
+      if (isCurrentState) {
+        const startOrdinal = Math.min(allTurns.length, checkpoint.startIndex + 1);
+        const endOrdinal = allTurns.length;
+        const checkpointNote = checkpoint.anchorMissing
           ? '저장된 checkpoint를 현재 기록에서 찾지 못해 확보된 전체 원문을 대상으로 합니다.'
           : checkpoint.checkpointKey
             ? `마지막 완료 지점 다음 대화부터 ${checkpoint.turns.length} USER턴을 대상으로 합니다.`
-            : `아직 완료 checkpoint가 없어 확보된 전체 ${allTurns.length} USER턴을 대상으로 합니다.`
-        : '작중 날짜 경계에 맞게 시작·끝 USER 턴을 직접 조정할 수 있습니다.';
-      backdrop.querySelector('.rpcm-ai-body').innerHTML = `<section class="rpcm-ai-card"><h3>${type === 'currentState' ? '현재상태 갱신 범위' : '날짜요약 범위'}</h3><div class="rpcm-ai-grid"><label class="rpcm-ai-field"><span>시작 USER 턴</span><input id="rpcm-chatgpt-start-turn" type="number" min="1" max="${allTurns.length}" value="${Math.max(1, startOrdinal)}" ${type === 'currentState' ? 'readonly' : ''}></label><label class="rpcm-ai-field"><span>끝 USER 턴</span><input id="rpcm-chatgpt-end-turn" type="number" min="1" max="${allTurns.length}" value="${endOrdinal}" ${type === 'currentState' ? 'readonly' : ''}></label></div><p class="rpcm-ai-help">${esc(checkpointNote)} 숨김 RP Manager·로어 주입 블록은 제거하고 실제 USER 및 CHARACTER/assistant 본문은 보존합니다.</p></section><section class="rpcm-ai-card"><h3>전송 자료</h3><div class="rpcm-ai-progress">① 실제 RP 원문 TXT\n② ${type === 'currentState' ? '현재 저장된 현재상태 TXT' : '현재 저장된 날짜요약 문맥 TXT'}\n③ 사용자가 저장한 ${type === 'currentState' ? '현재상태' : '날짜요약'} 지침 TXT</div><p class="rpcm-ai-help">대화방: ${esc(targetUrl)} · 전송만으로 checkpoint는 바뀌지 않습니다.</p><div class="rpcm-ai-status" id="rpcm-chatgpt-transfer-status"></div></section>`;
+            : `아직 완료 checkpoint가 없어 확보된 전체 ${allTurns.length} USER턴을 대상으로 합니다.`;
+        backdrop.querySelector('.rpcm-ai-body').innerHTML = `<section class="rpcm-ai-card"><h3>현재상태 갱신 범위</h3><div class="rpcm-ai-grid"><label class="rpcm-ai-field"><span>시작 USER 턴</span><input id="rpcm-chatgpt-start-turn" type="number" min="1" max="${allTurns.length}" value="${Math.max(1, startOrdinal)}" readonly></label><label class="rpcm-ai-field"><span>끝 USER 턴</span><input id="rpcm-chatgpt-end-turn" type="number" min="1" max="${allTurns.length}" value="${endOrdinal}" readonly></label></div><p class="rpcm-ai-help">${esc(checkpointNote)} 숨김 RP Manager·로어 주입 블록은 제거하고 실제 USER 및 CHARACTER/assistant 본문은 보존합니다.</p></section><section class="rpcm-ai-card"><h3>전송 자료</h3><div class="rpcm-ai-progress">① 실제 RP 원문 TXT\n② 현재 저장된 현재상태 TXT\n③ 사용자가 저장한 현재상태 지침 TXT</div><p class="rpcm-ai-help">대화방: ${esc(targetUrl)} · 전송만으로 checkpoint는 바뀌지 않습니다.</p><div class="rpcm-ai-status" id="rpcm-chatgpt-transfer-status"></div></section>`;
+      } else {
+        dayAnalysis = analyzeChatGptOrdinalDays(allTurns);
+        if (!dayAnalysis.days.length) {
+          close();
+          notify('현재 RP 원문에서 일차 정보를 찾지 못했습니다.', 'warn', 5200);
+          return;
+        }
+        const startDay = dayAnalysis.days[0];
+        const endDay = dayAnalysis.days[dayAnalysis.days.length - 1];
+        const dayOptions = dayAnalysis.days.map(day => `<option value="${day}">${day}일차</option>`).join('');
+        backdrop.querySelector('.rpcm-ai-body').innerHTML = `<section class="rpcm-ai-card"><h3>날짜요약 범위 선택</h3><div class="rpcm-ai-grid"><label class="rpcm-ai-field"><span>시작</span><select id="rpcm-chatgpt-start-day">${dayOptions}</select></label><label class="rpcm-ai-field"><span>종료</span><select id="rpcm-chatgpt-end-day">${dayOptions}</select></label></div><p class="rpcm-ai-help">원문 상단에서 실제로 감지된 ${dayAnalysis.days.length}개 일차만 표시합니다. 선택 범위에 속한 USER 및 CHARACTER/assistant 원문은 가공하지 않고 기존 형식으로 첨부합니다.</p></section><section class="rpcm-ai-card"><h3>전송 자료</h3><div class="rpcm-ai-progress">① 선택한 ${startDay}~${endDay}일차의 실제 RP 원문 TXT\n② 현재 저장된 날짜요약 문맥 TXT\n③ 사용자가 저장한 날짜요약 지침 TXT</div><p class="rpcm-ai-help">대화방: ${esc(targetUrl)} · 날짜요약 지침과 ChatGPT 웹 전송 방식은 기존 설정을 그대로 사용합니다.</p><div class="rpcm-ai-status" id="rpcm-chatgpt-transfer-status"></div></section>`;
+        const startSelect = backdrop.querySelector('#rpcm-chatgpt-start-day');
+        const endSelect = backdrop.querySelector('#rpcm-chatgpt-end-day');
+        startSelect.value = String(startDay);
+        endSelect.value = String(endDay);
+        const syncEndOptions = () => {
+          const selectedStart = Number(startSelect.value);
+          [...endSelect.options].forEach(option => { option.disabled = Number(option.value) < selectedStart; });
+          if (Number(endSelect.value) < selectedStart) endSelect.value = String(dayAnalysis.days.find(day => day >= selectedStart) || selectedStart);
+        };
+        startSelect.onchange = syncEndOptions;
+        syncEndOptions();
+      }
       const sendButton = backdrop.querySelector('[data-chatgpt-transfer="send"]');
       sendButton.disabled = false;
-      sendButton.onclick = () => {
+      sendButton.onclick = async () => {
         const status = backdrop.querySelector('#rpcm-chatgpt-transfer-status');
+        sendButton.disabled = true;
         try {
-          const start = Math.max(1, Math.min(allTurns.length, Number(backdrop.querySelector('#rpcm-chatgpt-start-turn')?.value) || 1));
-          const end = Math.max(1, Math.min(allTurns.length, Number(backdrop.querySelector('#rpcm-chatgpt-end-turn')?.value) || allTurns.length));
-          if (start > end) throw new Error('시작 턴은 끝 턴보다 클 수 없습니다.');
-          const payload = makeChatGptTransferPayload(room, type, allTurns, { startIndex:start - 1, endIndex:end - 1 }, targetUrl);
-          queueChatGptTransfer(payload);
+          if (isCurrentState) {
+            const start = Math.max(1, Math.min(allTurns.length, Number(backdrop.querySelector('#rpcm-chatgpt-start-turn')?.value) || 1));
+            const end = Math.max(1, Math.min(allTurns.length, Number(backdrop.querySelector('#rpcm-chatgpt-end-turn')?.value) || allTurns.length));
+            if (start > end) throw new Error('시작 턴은 끝 턴보다 클 수 없습니다.');
+            const payload = makeChatGptTransferPayload(room, type, allTurns, { startIndex:start - 1, endIndex:end - 1 }, targetUrl);
+            queueChatGptTransfer(payload);
+            close();
+            notify(`ChatGPT 전송 준비 완료 · T${start}-T${end} · 새 탭에서 TXT 첨부를 진행합니다.`, 'success', 5500);
+            return;
+          }
+
+          const startDay = Number(backdrop.querySelector('#rpcm-chatgpt-start-day')?.value || 0);
+          const endDay = Number(backdrop.querySelector('#rpcm-chatgpt-end-day')?.value || 0);
+          if (!dayAnalysis.days.includes(startDay) || !dayAnalysis.days.includes(endDay)) throw new Error('실제 원문에서 감지된 일차를 선택해 주세요.');
+          if (startDay > endDay) throw new Error('시작 일차는 종료 일차보다 뒤일 수 없습니다.');
+          const selectedEntries = dayAnalysis.entries.filter(entry => Number(entry.day) >= startDay && Number(entry.day) <= endDay);
+          if (!selectedEntries.length) throw new Error('선택한 일차 범위에 전송할 완료 RP 대화가 없습니다.');
+          const selectedTurns = selectedEntries.map(entry => ({ ...entry.turn, _chatGptSourceOrdinal:entry.index + 1, _chatGptOrdinalDay:entry.day }));
+          const firstEntry = selectedEntries[0];
+          const lastEntry = selectedEntries[selectedEntries.length - 1];
+          const payload = makeChatGptTransferPayload(room, type, allTurns, {
+            turns:selectedTurns,
+            startIndex:firstEntry.index,
+            endIndex:lastEntry.index,
+            startOrdinal:firstEntry.index + 1,
+            endOrdinal:lastEntry.index + 1,
+            startDay,
+            endDay,
+          }, targetUrl);
+          const previousRange = room.chatGptDateSummaryRange || null;
+          room.chatGptDateSummaryRange = { startDay, endDay, sentAt:nowIso() };
+          await saveRoom(room);
+          try { queueChatGptTransfer(payload); }
+          catch (error) {
+            room.chatGptDateSummaryRange = previousRange;
+            await saveRoom(room);
+            throw error;
+          }
+          const hint = state.modal?.querySelector('#rpcm-chatgpt-date-summary-hint');
+          if (hint) hint.textContent = chatGptDateSummaryRangeHint(room);
           close();
-          notify(`ChatGPT 전송 준비 완료 · T${start}-T${end} · 새 탭에서 TXT 첨부를 진행합니다.`, 'success', 5500);
+          notify(`ChatGPT 전송 준비 완료 · ${startDay}~${endDay}일차 · ${selectedTurns.length}개 USER턴 · 새 탭에서 TXT 첨부를 진행합니다.`, 'success', 5500);
         } catch (error) {
           status.textContent = String(error?.message || error);
           status.className = 'rpcm-ai-status error';
+          sendButton.disabled = false;
         }
       };
     } catch (error) {
@@ -5664,6 +5754,27 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
     return ['pending','queued','streaming','generating','processing','in_progress','in-progress'].includes(status);
   }
 
+  function extractTopOrdinalDay(value) {
+    let source = String(value || '');
+    const stripped = stripOurContextBlock(source);
+    if (stripped.found) source = stripped.text;
+    source = source
+      .replace(/\\?<!--RP_CONTEXT_MANAGER_START[\s\S]*?RP_CONTEXT_MANAGER_END-->/gi, ' ')
+      .replace(/<rp_context_manager\b[\s\S]*?<\/rp_context_manager>/gi, ' ')
+      .replace(/<ooc_lore_context>[\s\S]*?<\/ooc_lore_context>/gi, ' ');
+    const lines = normalizeLineBreaks(source).slice(0, 2400).split('\n');
+    let nonEmptyLines = 0;
+    for (const rawLine of lines) {
+      const line = String(rawLine || '').replace(/<[^>]{0,180}>/g, ' ').replace(/[*_~`#]+/g, ' ').trim();
+      if (!line) continue;
+      if (++nonEmptyLines > 24) break;
+      const match = line.match(/(?:^|[^\d])(\d{1,5})\s*일차(?=$|[^\p{L}\p{N}])/u);
+      const day = Number(match?.[1] || 0);
+      if (Number.isInteger(day) && day > 0) return day;
+    }
+    return null;
+  }
+
   function buildCompletedAiDialogueTurns(messages) {
     const turns = [];
     let current = null;
@@ -5677,18 +5788,22 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
         userText:current.userText,
         assistantText,
         text:`[USER]\n${current.userText}\n\n[AI]\n${assistantText}`,
+        ordinalDay:Number(current.ordinalDay) || null,
       });
     };
     for (const message of (messages || [])) {
       const role = String(messageRoleOf(message) || '').toLowerCase();
-      const clean = stripAutomationNoise(messageTextOf(message), true);
+      const rawText = messageTextOf(message);
+      const messageOrdinalDay = extractTopOrdinalDay(rawText);
+      const clean = stripAutomationNoise(rawText, true);
       if (!clean) continue;
       if (role === 'user') {
         push();
-        current = { userText:clean, assistantParts:[], assistantId:'', turnId:String(message?.turnId || ''), incomplete:false };
+        current = { userText:clean, assistantParts:[], assistantId:'', turnId:String(message?.turnId || ''), incomplete:false, ordinalDay:messageOrdinalDay };
       } else if (current && ['assistant','character','bot'].includes(role)) {
         if (isIncompleteAiSourceMessage(message)) { current.incomplete = true; continue; }
         current.assistantParts.push(clean);
+        if (!current.ordinalDay && messageOrdinalDay) current.ordinalDay = messageOrdinalDay;
         current.assistantId = String(messageIdOf(message) || current.assistantId || '');
         current.turnId = String(message?.turnId || current.turnId || '');
       }
@@ -6341,6 +6456,15 @@ try {
           turnKey:String(room.chatGptCurrentStateCheckpoint.turnKey || ''),
           turnOrdinal:Math.max(0, Number(room.chatGptCurrentStateCheckpoint.turnOrdinal) || 0),
           completedAt:String(room.chatGptCurrentStateCheckpoint.completedAt || ''),
+        }
+      : null;
+    room.chatGptDateSummaryRange = room.chatGptDateSummaryRange && typeof room.chatGptDateSummaryRange === 'object'
+      && Number(room.chatGptDateSummaryRange.startDay) > 0
+      && Number(room.chatGptDateSummaryRange.endDay) >= Number(room.chatGptDateSummaryRange.startDay)
+      ? {
+          startDay:Math.floor(Number(room.chatGptDateSummaryRange.startDay)),
+          endDay:Math.floor(Number(room.chatGptDateSummaryRange.endDay)),
+          sentAt:String(room.chatGptDateSummaryRange.sentAt || ''),
         }
       : null;
     room.chatGptReminderDismissedTurnKey = String(room.chatGptReminderDismissedTurnKey || '');
@@ -9736,6 +9860,7 @@ try {
       autoRecallContextText: '',
       chatGptUrlOverride: '',
       chatGptCurrentStateCheckpoint: null,
+      chatGptDateSummaryRange: null,
       chatGptReminderDismissedTurnKey: '',
       aiSummaryLastAppliedTurnKey: '',
       aiSummaryLastAppliedAt: '',
@@ -14722,8 +14847,8 @@ try {
       .rpcm-unified-api-backdrop{position:fixed;inset:0;z-index:2147483647;background:rgba(51,65,85,.28);display:flex;align-items:center;justify-content:center;padding:3vh 3vw;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,"Pretendard",sans-serif;color:#273444}.rpcm-unified-api-dialog{width:min(820px,94vw);height:auto;max-height:94vh}.rpcm-api-feature-list{display:grid;gap:0;border:1px solid #d8e2ec;border-radius:10px;overflow:hidden}.rpcm-api-feature-row{display:grid;grid-template-columns:minmax(180px,.85fr) minmax(220px,1fr) minmax(130px,.65fr);gap:12px;align-items:center;padding:12px;border-bottom:1px solid #d8e2ec}.rpcm-api-feature-row:last-child{border-bottom:0}.rpcm-api-feature-row>div{display:grid;gap:3px}.rpcm-api-feature-row strong{font-size:12px}.rpcm-api-feature-row small{color:#66778a;font-size:10px;line-height:1.45}.rpcm-api-feature-row select,.rpcm-api-feature-row input{min-width:0;width:100%;box-sizing:border-box;border:1px solid #d8e2ec;border-radius:8px;background:#fff;color:#273444;padding:8px 9px;font-size:12px}.rpcm-api-feature-status{display:grid;gap:2px}.rpcm-api-feature-status small{overflow-wrap:anywhere;white-space:normal}.rpcm-api-error-detail{color:#be123c!important;max-height:4.5em;overflow:auto}.rpcm-api-state{font-size:11px;font-weight:800}.rpcm-api-state.ok{color:#15803d}.rpcm-api-state.error{color:#be123c}.rpcm-api-state.off,.rpcm-api-state.idle{color:#66778a}.rpcm-api-context-toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;border:1px solid #7dd3fc;border-radius:10px;background:#f8fafc}.rpcm-api-context-toggle>span{display:grid;gap:4px}.rpcm-api-context-toggle strong{font-size:12px}.rpcm-api-context-toggle small{color:#66778a;font-size:10px}.rpcm-api-context-toggle input{width:20px;height:20px;accent-color:#0284c7}.rpcm-main-api-button{font-size:15px!important;color:#0369a1!important}
       .rpcm-api-room-usage{gap:10px}.rpcm-api-usage-list{display:grid;border:1px solid #d8e2ec;border-radius:10px;overflow:hidden}.rpcm-api-usage-row{display:grid;grid-template-columns:minmax(120px,.65fr) minmax(0,1.6fr) auto;gap:10px;align-items:center;padding:10px 11px;border-bottom:1px solid #d8e2ec;background:#fff}.rpcm-api-usage-row:last-child{border-bottom:0}.rpcm-api-usage-row strong{font-size:11px;color:#273444}.rpcm-api-usage-row span{font-size:10px;color:#66778a;line-height:1.45}.rpcm-api-usage-row b{font-size:10px;color:#0369a1;text-align:right}.rpcm-api-usage-total{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;align-items:center;padding:11px 12px;border:1px solid #d8e2ec;border-radius:10px;background:#fff}.rpcm-api-usage-total span{font-size:10px;color:#66778a;line-height:1.55}.rpcm-api-usage-total strong{font-size:13px;color:#0369a1}.rpcm-api-usage-total small{grid-column:1/-1;color:#66778a;font-size:9px}.rpcm-api-usage-total small:empty{display:none}.rpcm-api-usage-details{border:1px solid #d8e2ec;border-radius:9px;background:#fff;overflow:hidden}.rpcm-api-usage-details>summary{display:flex;align-items:center;gap:8px;padding:9px 11px;cursor:pointer;list-style:none;color:#66778a;font-size:10px;font-weight:750}.rpcm-api-usage-details>summary::-webkit-details-marker{display:none}.rpcm-api-usage-details>summary span{margin-left:auto;color:#66778a}.rpcm-api-usage-details>div{max-height:250px;overflow:auto;border-top:1px solid #d8e2ec}.rpcm-api-usage-call{display:grid;grid-template-columns:135px 100px minmax(120px,1fr) minmax(170px,1fr) auto;gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid #d8e2ec;font-size:9px}.rpcm-api-usage-call:last-child{border-bottom:0}.rpcm-api-usage-call span{color:#66778a;overflow-wrap:anywhere}.rpcm-api-usage-call strong{color:#0369a1}.rpcm-api-usage-call b{color:#0369a1;text-align:right}.rpcm-api-usage-empty{padding:18px;text-align:center;color:#66778a;font-size:10px}
       @media(max-width:680px),(pointer:coarse) and (max-width:1024px){.rpcm-api-feature-row input{font-size:16px}#rpcm-ai-backdrop{padding:0}.rpcm-ai-dialog{width:100vw;height:100%;max-height:none;border-radius:0}.rpcm-ai-head{padding:9px 11px}.rpcm-ai-head p{display:none}.rpcm-ai-body{padding:9px;gap:8px}.rpcm-ai-grid,.rpcm-ai-range-primary{grid-template-columns:1fr}.rpcm-ai-field input:not([type=checkbox]),.rpcm-ai-field select,.rpcm-ai-field textarea,.rpcm-ai-guide-body textarea,.rpcm-ai-history-toolbar select{font-size:16px}.rpcm-ai-result textarea,.rpcm-ai-history-text{min-height:48vh;font-size:14px!important}#rpcm-ai-generate{justify-self:stretch;width:100%}.rpcm-ai-range-card{padding:10px}.rpcm-ai-range-resume{grid-template-columns:1fr}.rpcm-ai-range-resume .rpcm-ai-help{text-align:left}.rpcm-ai-range-resume .rpcm-ai-resume-mark{justify-self:start}.rpcm-ai-generate-row{display:grid}.rpcm-ai-generate-row .rpcm-ai-status{order:2}.rpcm-ai-connection-actions{align-items:stretch}.rpcm-ai-auth-note{flex-basis:100%;margin-right:0}.rpcm-ai-connection-actions .rpcm-ai-btn{flex:1}.rpcm-ai-foot{padding:7px 9px calc(7px + env(safe-area-inset-bottom,0px));gap:5px;flex-wrap:wrap}.rpcm-ai-foot .rpcm-ai-usage{width:100%;order:-1}.rpcm-ai-foot .rpcm-ai-btn{flex:1 1 auto;padding-inline:7px}.rpcm-ai-diff-summary{grid-template-columns:1fr}.rpcm-ai-diff-hide{justify-self:start}.rpcm-ai-diff-head,.rpcm-ai-diff-row{grid-template-columns:1fr}.rpcm-ai-guide-editor>summary span{display:none}}
-      .rpcm-chatgpt-launchbar{flex-wrap:wrap}.rpcm-chatgpt-launchbar>div{flex:1 1 280px}.rpcm-chatgpt-settings{border-color:#d8e2ec;background:#f0f9ff}.rpcm-current-state-reminder{display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;margin:0 0 6px;padding:7px 10px;border:1px solid #3e7184;border-radius:9px;background:linear-gradient(90deg,#f0f9ff,#f0f9ff);color:#0369a1;box-shadow:0 5px 18px rgba(51,65,85,.24);font:11px/1.35 -apple-system,BlinkMacSystemFont,"Pretendard",sans-serif;pointer-events:auto}.rpcm-current-state-reminder>span{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rpcm-current-state-reminder strong{color:#0369a1}.rpcm-current-state-reminder button{flex:0 0 auto;border:1px solid #4a8194;border-radius:7px;background:#f0f9ff;color:#0369a1;padding:5px 9px;font:inherit;font-weight:800;cursor:pointer}.rpcm-current-state-reminder button.close{border:0;background:transparent;color:#8eacb6;padding:3px 5px;font-size:18px;line-height:1}
-      @media(max-width:680px){.rpcm-unified-api-backdrop{padding:0;align-items:stretch}.rpcm-unified-api-dialog{width:100vw;height:100%;max-height:none;border-radius:0}.rpcm-api-feature-row{grid-template-columns:1fr;gap:7px}.rpcm-api-feature-row select{font-size:16px}.rpcm-api-usage-row{grid-template-columns:1fr}.rpcm-api-usage-row b{text-align:left}.rpcm-api-usage-call{grid-template-columns:1fr 1fr}.rpcm-api-usage-call span:nth-of-type(3){grid-column:1/-1}.rpcm-api-usage-total{grid-template-columns:1fr}.rpcm-api-usage-total small{grid-column:1}.rpcm-current-state-reminder>span{white-space:normal}.rpcm-chatgpt-launchbar .rpcm-mini{flex:1 1 46%}}
+      .rpcm-chatgpt-launchbar{flex-wrap:wrap}.rpcm-chatgpt-launchbar>.rpcm-chatgpt-copy{flex:1 1 280px}.rpcm-chatgpt-launchbar>.rpcm-chatgpt-action{display:flex;flex:0 0 auto;min-width:132px;flex-direction:column;align-items:stretch;gap:2px}.rpcm-chatgpt-action .rpcm-mini{width:100%}.rpcm-chatgpt-action small{display:block;color:#94a3b8;font-size:9px;font-weight:650;line-height:1.25;text-align:center;white-space:nowrap}.rpcm-chatgpt-settings{border-color:#d8e2ec;background:#f0f9ff}.rpcm-current-state-reminder{display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;margin:0 0 6px;padding:7px 10px;border:1px solid #3e7184;border-radius:9px;background:linear-gradient(90deg,#f0f9ff,#f0f9ff);color:#0369a1;box-shadow:0 5px 18px rgba(51,65,85,.24);font:11px/1.35 -apple-system,BlinkMacSystemFont,"Pretendard",sans-serif;pointer-events:auto}.rpcm-current-state-reminder>span{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rpcm-current-state-reminder strong{color:#0369a1}.rpcm-current-state-reminder button{flex:0 0 auto;border:1px solid #4a8194;border-radius:7px;background:#f0f9ff;color:#0369a1;padding:5px 9px;font:inherit;font-weight:800;cursor:pointer}.rpcm-current-state-reminder button.close{border:0;background:transparent;color:#8eacb6;padding:3px 5px;font-size:18px;line-height:1}
+      @media(max-width:680px){.rpcm-unified-api-backdrop{padding:0;align-items:stretch}.rpcm-unified-api-dialog{width:100vw;height:100%;max-height:none;border-radius:0}.rpcm-api-feature-row{grid-template-columns:1fr;gap:7px}.rpcm-api-feature-row select{font-size:16px}.rpcm-api-usage-row{grid-template-columns:1fr}.rpcm-api-usage-row b{text-align:left}.rpcm-api-usage-call{grid-template-columns:1fr 1fr}.rpcm-api-usage-call span:nth-of-type(3){grid-column:1/-1}.rpcm-api-usage-total{grid-template-columns:1fr}.rpcm-api-usage-total small{grid-column:1}.rpcm-current-state-reminder>span{white-space:normal}.rpcm-chatgpt-launchbar>.rpcm-chatgpt-action{flex:1 1 46%;min-width:118px}.rpcm-chatgpt-launchbar .rpcm-mini{flex:1 1 auto}}
     `);
   }
 
@@ -15966,6 +16091,8 @@ try {
     const st = statusForChars(capacity.total, maxChars, capacity.byteKnown ? capacity.payloadBytes : 0);
     const usage = renderUsageSummary(displayItems, stats.block, maxChars, capacity.known ? capacity.original : 0, capacity.known ? capacity.separator : 0);
     const uiPrefs = loadUiPrefs();
+    const currentStateChatGptHint = chatGptCurrentStateTurnHint(room);
+    const dateSummaryChatGptHint = chatGptDateSummaryRangeHint(room);
 
     overlay.innerHTML = `
       <div id="rpcm-modal-wrap">
@@ -16004,10 +16131,10 @@ try {
             ${(autoDisplayItems.length || logBlocksForIssues.length) ? `<div class="rpcm-auto-active rpcm-memory-only"><div class="rpcm-auto-active-title"><span>현재 주입 항목 · 선정 이유</span>${logBlocksForIssues.length ? '<button type="button" class="rpcm-related-add" id="rpcm-related-add">+ 관련로그 추가</button>' : ''}</div>${autoDisplayItems.map(i => { const isBlockItem = i.group === 'log-auto' || i.sourceSlotId === 'logSummary' || i.sourceSlotId === 'sceneMemory' || /-log$/.test(String(i.autoType || '')) || i.autoType === 'related-scene'; const category = itemCategory(i); const evidence = relatedLogEvidence(i); const itemKey = pendingItemIdentity(i); return `<div class="rpcm-auto-active-row" data-pending-key="${esc(itemKey)}" data-source-key="${esc(String(i.sourceKey || '').replace(/^auto-log:/, ''))}" data-auto-type="${esc(i.autoType || '')}"><span class="rpcm-auto-badge tone-${categoryTone(category)}">${esc(category)}</span><div class="rpcm-auto-active-copy"><strong>${esc(i.title)}</strong><span class="rpcm-auto-reason">${esc(itemReason(i) || '자동 선택')}</span>${evidence ? `<span class="rpcm-auto-evidence">선정 근거 · ${esc(evidence)}</span>` : ''}</div><div class="rpcm-auto-active-meta"><span>${formatCount(String(i.content || '').length)}자 · ${esc(remainingLabelForItem(i))}</span>${isBlockItem ? `<button type="button" class="rpcm-auto-inline-toggle" title="내용 펼치기" aria-label="내용 펼치기">▾</button>${i.autoType === 'related-log' ? '<button type="button" class="rpcm-auto-reroll" title="내용을 확인하고 다른 로그로 교체">다른 로그</button>' : ''}<button type="button" class="rpcm-auto-remove" title="현재 주입에서 빼기">빼기</button>` : ''}</div>${isBlockItem ? `<pre class="rpcm-auto-inline-content" hidden>${esc(String(i.content || '').trim())}</pre>` : ''}</div>`; }).join('')}${aiContextReportHtml}</div>` : ''}
 
             <div class="rpcm-ai-launchbar rpcm-chatgpt-launchbar rpcm-memory-only">
-              <div><strong>🌐 ChatGPT 웹으로 보내기</strong><span>실제 RP 원문·저장된 기억·사용자 수정 지침을 TXT로 첨부합니다. 외부 요약 API는 호출하지 않습니다.</span></div>
-              <button class="rpcm-mini" id="rpcm-chatgpt-date-summary">ChatGPT로 날짜요약</button>
-              <button class="rpcm-mini" id="rpcm-chatgpt-current-state">ChatGPT로 현재상태</button>
-              <button class="rpcm-mini" id="rpcm-chatgpt-current-complete">현재상태 갱신 완료</button>
+              <div class="rpcm-chatgpt-copy"><strong>🌐 ChatGPT 웹으로 보내기</strong><span>실제 RP 원문·저장된 기억·사용자 수정 지침을 TXT로 첨부합니다. 외부 요약 API는 호출하지 않습니다.</span></div>
+              <div class="rpcm-chatgpt-action"><button type="button" class="rpcm-mini" id="rpcm-chatgpt-date-summary">ChatGPT로 날짜요약</button><small id="rpcm-chatgpt-date-summary-hint">${esc(dateSummaryChatGptHint)}</small></div>
+              <div class="rpcm-chatgpt-action"><button type="button" class="rpcm-mini" id="rpcm-chatgpt-current-state">ChatGPT로 현재상태</button><small>${esc(currentStateChatGptHint)}</small></div>
+              <div class="rpcm-chatgpt-action"><button type="button" class="rpcm-mini" id="rpcm-chatgpt-current-complete">현재상태 갱신 완료</button><small>최신 상태</small></div>
             </div>
 
             <div class="rpcm-section" id="rpcm-section-basic">
