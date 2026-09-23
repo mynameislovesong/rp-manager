@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽위시 RP Manager 개인화
 // @namespace    local.rp.context.manager.personal
-// @version      0.14.2
+// @version      0.14.3
 // @description  기존 RP 기억 관리 기능과 ChatGPT 웹 전송형 날짜요약·현재상태 갱신을 지원하는 개인화 버전입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -259,13 +259,13 @@
   // 버전별 키를 쓰면 구버전과 신버전이 동시에 설치됐을 때 둘 다 실행될 수 있습니다.
   // 모든 버전이 공유하는 고정 키로 중복 실행을 막습니다.
   if (window.__WISH_RP_MANAGER_LOADED__) return;
-  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.14.2-personal', loadedAt: Date.now() };
+  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.14.3-personal', loadedAt: Date.now() };
   // 같은 페이지에 남아 있는 v0.8.10 복사본이 뒤늦게 시작되는 경우도 차단합니다.
   window.__RP_MANAGER_0810_LOADED__ = true;
 
   const APP = {
     name: '🪽위시 RP Manager 개인화',
-    version: '0.14.2',
+    version: '0.14.3',
     dbName: 'RPContextManagerDB',
     dbVersion: 2,
     storeName: 'rooms',
@@ -14311,6 +14311,7 @@ try {
       .rpcm-pending{border-color:#f3bf72!important;background:#fff7ed!important;color:#49311f!important}.rpcm-pending strong,.rpcm-pending b{color:#2f241c!important}.rpcm-pending .rpcm-btn.secondary{border-color:#d8c4aa!important;background:#fff!important;color:#3f342b!important}.rpcm-pending .rpcm-btn.secondary:hover{border-color:#f59e0b!important;background:#ffedd5!important;color:#7c2d12!important}.rpcm-pending .rpcm-btn.warn{border-color:#9a3412!important;background:#9a3412!important;color:#fff!important}
       .rpcm-mobile-nav-strip{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:8px!important}.rpcm-jump{justify-content:center!important;min-height:40px!important;padding:7px 13px!important;border-radius:9px!important;text-align:center!important;font-size:12px!important;font-weight:800!important;white-space:nowrap!important}.rpcm-jump.is-active{box-shadow:inset 0 -3px 0 var(--rpcm-light-accent),0 3px 10px rgba(14,165,233,.11)!important}
       #rpcm-section-basic,#rpcm-section-character,#rpcm-section-extra,#rpcm-section-tools{display:none!important}#rpcm-section-basic.rpcm-mobile-section-active,#rpcm-section-character.rpcm-mobile-section-active,#rpcm-section-extra.rpcm-mobile-section-active{display:block!important}#rpcm-section-tools.rpcm-mobile-section-active{display:flex!important}#rpcm-overlay:not([data-rpcm-active-section="rpcm-section-basic"]) .rpcm-memory-only{display:none!important}
+      #rpcm-section-extra,#rpcm-extra-slots,#rpcm-extra-slots .rpcm-slot,#rpcm-extra-slots .rpcm-edit,#rpcm-section-extra .rpcm-section-head,#rpcm-section-extra .rpcm-charlib-actions{box-sizing:border-box!important;min-width:0!important;max-width:100%!important}#rpcm-section-extra{width:100%!important;overflow-x:hidden!important}#rpcm-section-extra .rpcm-section-head>div,#rpcm-extra-slots .rpcm-slot summary{min-width:0!important;max-width:100%!important}#rpcm-section-extra .rpcm-charlib-actions{width:100%!important}#rpcm-section-extra .rpcm-charlib-actions .rpcm-add-btn{flex:0 1 auto!important;min-width:0!important}
 
       /* Tools keeps the existing handlers and storage, while acting as a settings index. */
       .rpcm-tools{flex-direction:column!important;gap:13px!important;margin:2px 0 12px!important}.rpcm-tools-heading{display:grid;gap:3px;padding:2px 2px 0}.rpcm-tool-settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;width:100%}.rpcm-tool-card{display:grid;align-content:start;gap:13px;min-width:0;padding:16px;border:1px solid var(--rpcm-light-border);border-radius:12px;background:#fff;box-shadow:0 2px 10px rgba(51,65,85,.055)}.rpcm-tool-card-wide{grid-column:1/-1}.rpcm-tool-card-head{display:flex;align-items:flex-start;gap:12px}.rpcm-tool-card-head>div{flex:1;min-width:0}.rpcm-tool-card h3{margin:0;color:var(--rpcm-light-text);font-size:14px}.rpcm-tool-card p{margin:4px 0 0;color:var(--rpcm-light-muted);font-size:10px;line-height:1.55}.rpcm-tool-state{flex:0 0 auto;padding:4px 7px;border:1px solid #bae6fd;border-radius:999px;background:#f0f9ff;color:#0369a1;font-size:9px;font-weight:800}.rpcm-tool-card dl{display:grid;gap:0;margin:0;border:1px solid #e2eaf1;border-radius:9px;overflow:hidden}.rpcm-tool-card dl>div{display:grid;grid-template-columns:minmax(120px,.75fr) minmax(0,1.25fr);gap:10px;padding:9px 10px;border-top:1px solid #e8eef3}.rpcm-tool-card dl>div:first-child{border-top:0}.rpcm-tool-card dt{color:var(--rpcm-light-muted);font-size:10px}.rpcm-tool-card dd{min-width:0;margin:0;color:var(--rpcm-light-text);font-size:10px;font-weight:750;overflow-wrap:anywhere}.rpcm-tool-toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border:1px solid #bae6fd;border-radius:9px;background:#f0f9ff}.rpcm-tool-toggle>span{display:grid;gap:3px}.rpcm-tool-toggle strong{color:#075985;font-size:11px}.rpcm-tool-toggle small{color:#4f7182;font-size:9px;line-height:1.45}.rpcm-tool-toggle input{width:20px;height:20px;accent-color:var(--rpcm-light-accent-strong)}.rpcm-tool-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px}.rpcm-tool-actions-wrap{justify-content:flex-start;flex-wrap:wrap}.rpcm-tool-actions .rpcm-mini{min-height:36px;padding:8px 11px}.rpcm-tool-actions .rpcm-mini.primary{border-color:var(--rpcm-light-accent-strong)!important;background:var(--rpcm-light-accent-strong)!important;color:#fff!important}.rpcm-tool-actions .rpcm-mini.danger{border-color:#fecaca!important;background:#fff1f2!important;color:#b91c1c!important}.rpcm-tools .rpcm-shortcuts{margin:0;color:var(--rpcm-light-muted)!important}
