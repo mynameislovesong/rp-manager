@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽위시 RP Manager 개인화
 // @namespace    local.rp.context.manager.personal
-// @version      0.14.3
+// @version      0.14.4
 // @description  기존 RP 기억 관리 기능과 ChatGPT 웹 전송형 날짜요약·현재상태 갱신을 지원하는 개인화 버전입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -259,13 +259,13 @@
   // 버전별 키를 쓰면 구버전과 신버전이 동시에 설치됐을 때 둘 다 실행될 수 있습니다.
   // 모든 버전이 공유하는 고정 키로 중복 실행을 막습니다.
   if (window.__WISH_RP_MANAGER_LOADED__) return;
-  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.14.3-personal', loadedAt: Date.now() };
+  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.14.4-personal', loadedAt: Date.now() };
   // 같은 페이지에 남아 있는 v0.8.10 복사본이 뒤늦게 시작되는 경우도 차단합니다.
   window.__RP_MANAGER_0810_LOADED__ = true;
 
   const APP = {
     name: '🪽위시 RP Manager 개인화',
-    version: '0.14.3',
+    version: '0.14.4',
     dbName: 'RPContextManagerDB',
     dbVersion: 2,
     storeName: 'rooms',
@@ -14274,7 +14274,7 @@ try {
       #rpcm-modal{background:var(--rpcm-light-bg)!important;color:var(--rpcm-light-text)!important;border-color:var(--rpcm-light-border-strong)!important;box-shadow:0 24px 70px rgba(51,65,85,.22)!important}
       .rpcm-header{background:rgba(255,255,255,.97)!important;border-color:var(--rpcm-light-border)!important;color:var(--rpcm-light-text)!important}.rpcm-title{color:#172334!important}.rpcm-sub{color:var(--rpcm-light-muted)!important}
       .rpcm-iconbtn,.rpcm-main-help-button{border-color:var(--rpcm-light-border)!important;background:#fff!important;color:#526477!important;box-shadow:0 1px 2px rgba(51,65,85,.05)!important}.rpcm-iconbtn:hover,.rpcm-main-help-button:hover{border-color:var(--rpcm-light-accent)!important;background:var(--rpcm-light-accent-softer)!important;color:var(--rpcm-light-accent-strong)!important}.rpcm-iconbtn:focus-visible,.rpcm-main-help-button:focus-visible{outline:0!important;border-color:var(--rpcm-light-accent)!important;box-shadow:0 0 0 3px rgba(56,189,248,.2)!important}
-      .rpcm-body{background:var(--rpcm-light-bg)!important;color:var(--rpcm-light-text)!important;scroll-padding-top:118px}
+      .rpcm-body{background:var(--rpcm-light-bg)!important;color:var(--rpcm-light-text)!important;scroll-padding-top:118px;overflow-x:hidden!important;scrollbar-gutter:stable}
       .rpcm-quickbar{top:-16px!important;z-index:18!important;display:grid!important;grid-template-columns:minmax(0,1.45fr) minmax(0,1fr) minmax(92px,max-content)!important;align-items:stretch!important;gap:10px!important;margin:-2px -5px 16px!important;padding:10px 5px 12px!important;background:rgba(242,246,250,.94)!important;border-color:var(--rpcm-light-border)!important;backdrop-filter:blur(14px)!important;overflow:visible!important}
       .rpcm-mobile-nav-strip{display:grid!important;grid-template-columns:repeat(4,minmax(112px,1fr))!important;gap:8px!important;min-width:0!important}
       .rpcm-jump{display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:10px!important;min-width:0!important;min-height:58px!important;padding:9px 12px!important;border:1px solid var(--rpcm-light-border)!important;border-radius:12px!important;background:#fff!important;color:var(--rpcm-light-text)!important;text-align:left!important;box-shadow:0 2px 8px rgba(51,65,85,.06)!important;transition:background .16s,border-color .16s,box-shadow .16s,transform .16s!important}
