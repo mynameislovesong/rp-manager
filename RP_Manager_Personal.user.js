@@ -16216,7 +16216,7 @@ JSON 하나만 출력:
     }
     const autoDisplayItems = sortAutoItemsForDisplay(displayItems.filter(i => i.autoType));
     // 펼치기 전에는 대형 원문을 DOM에 복제하지 않고 이번 렌더 수명 동안만 메모리에 둡니다.
-    const inlineAutoContentByKey = new Map(autoDisplayItems.map(item => [pendingItemIdentity(item), String(item.content || '').trim()]));
+    const inlineAutoContentByKey = new Map(autoDisplayItems.map(item => [pendingItemIdentity(item), String(item.content || '')]));
     const stats = statsForItems(displayItems);
     const warnings = getDataWarnings(room);
     const duplicateGroups = duplicateLogDateGroups(room);
@@ -16388,7 +16388,7 @@ JSON 하나만 출력:
           content = document.createElement('pre');
           content.className = 'rpcm-auto-inline-content';
           content.hidden = true;
-          content.textContent = inlineAutoContentByKey.get(String(row.dataset.pendingKey || '')) || '';
+          content.textContent = String(inlineAutoContentByKey.get(String(row.dataset.pendingKey || '')) || '').trim();
           row.appendChild(content);
         }
         content.hidden = !content.hidden;
