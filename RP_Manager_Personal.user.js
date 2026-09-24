@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽위시 RP Manager 개인화
 // @namespace    local.rp.context.manager.personal
-// @version      0.16.1
+// @version      0.16.2
 // @description  기존 RP 기억 관리 기능과 ChatGPT 웹 전송형 로그요약·현재상태 갱신을 지원하는 개인화 버전입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -259,13 +259,13 @@
   // 버전별 키를 쓰면 구버전과 신버전이 동시에 설치됐을 때 둘 다 실행될 수 있습니다.
   // 모든 버전이 공유하는 고정 키로 중복 실행을 막습니다.
   if (window.__WISH_RP_MANAGER_LOADED__) return;
-  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.16.1-personal', loadedAt: Date.now() };
+  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.16.2-personal', loadedAt: Date.now() };
   // 같은 페이지에 남아 있는 v0.8.10 복사본이 뒤늦게 시작되는 경우도 차단합니다.
   window.__RP_MANAGER_0810_LOADED__ = true;
 
   const APP = {
     name: '🪽위시 RP Manager 개인화',
-    version: '0.16.1',
+    version: '0.16.2',
     dbName: 'RPContextManagerDB',
     dbVersion: 2,
     storeName: 'rooms',
@@ -5457,7 +5457,7 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
         dayAnalysis = analyzeChatGptOrdinalDays(allTurns);
         if (!dayAnalysis.days.length) {
           close();
-          notify('현재 RP 원문에서 일차 정보를 찾지 못했습니다.', 'warn', 5200);
+          notify('Crack API 로그 원문에서 일차 정보를 찾지 못했습니다.', 'warn', 5200);
           return;
         }
         const startDay = dayAnalysis.days[0];
@@ -6132,7 +6132,9 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
       const line = String(rawLine || '').replace(/<[^>]{0,180}>/g, ' ').replace(/[*_~`#]+/g, ' ').trim();
       if (!line) continue;
       if (++nonEmptyLines > 24) break;
-      const match = line.match(/(?:^|[^\d])(\d{1,5})\s*일차(?=$|[^\p{L}\p{N}])/u);
+      // Crack API 원문의 상단 메타는 `45일차`, `45일 차`, `45 일 차`가 모두 올 수 있습니다.
+      // **[ T813〡45일 차〡PM 10:03… ]**처럼 굵게 표시된 헤더도 마크다운 제거 후 여기서 인식합니다.
+      const match = line.match(/(?:^|[^\d])(\d{1,5})\s*일\s*차(?=$|〡|[^\p{L}\p{N}])/u);
       const day = Number(match?.[1] || 0);
       if (Number.isInteger(day) && day > 0) return day;
     }
@@ -8208,7 +8210,7 @@ try {
     while ((m = re.exec(src))) {
       const inner = String(m[1] || '').trim();
       const standard = inner.match(/^((?:(\d{1,6})년[ \t]*)?(\d{1,2})월[ \t]*(\d{1,2})일)(?:[ \t]*·[ \t]*([^\-–—|｜]+?))?(?:[ \t]*[-–—|｜][ \t]*(.+))?$/);
-      const ordinal = inner.match(/^((\d{1,6})[ \t]*일차)(?:[ \t]*·[ \t]*([^\-–—|｜]+?))?(?:[ \t]*[-–—|｜][ \t]*(.+))?$/);
+      const ordinal = inner.match(/^((\d{1,6})[ \t]*일[ \t]*차)(?:[ \t]*·[ \t]*([^\-–—|｜]+?))?(?:[ \t]*[-–—|｜][ \t]*(.+))?$/);
       const unknown = inner.match(/^(날짜[ \t]*(미상|미정|불명|없음))(?:[ \t]*·[ \t]*([^\-–—|｜]+?))?(?:[ \t]*[-–—|｜][ \t]*(.+))?$/);
       const eraNamePattern = 'B\\.?[ \\t]*C\\.?(?:[ \\t]*E\\.?)?|A\\.?[ \\t]*D\\.?|C\\.?[ \\t]*E\\.?|기원전|서기';
       const eraRe = new RegExp(`^((${eraNamePattern})[ \\t]*(\\d{1,6})(?:년)?(?:[ \\t]*(\\d{1,2})월[ \\t]*(\\d{1,2})일)?(?:[ \\t]*[~～](?:[ \\t]*(?:${eraNamePattern}[ \\t]*)?\\d{1,6}(?:년)?(?:[ \\t]*\\d{1,2}월[ \\t]*\\d{1,2}일)?)?)?)(?:[ \\t]*·[ \\t]*([^\\-–—|｜]+?))?(?:[ \\t]*[-–—|｜][ \\t]*(.+))?$`, 'i');
