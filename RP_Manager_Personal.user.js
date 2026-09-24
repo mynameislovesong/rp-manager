@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽위시 RP Manager 개인화
 // @namespace    local.rp.context.manager.personal
-// @version      0.15.8
+// @version      0.15.9
 // @description  기존 RP 기억 관리 기능과 ChatGPT 웹 전송형 날짜요약·현재상태 갱신을 지원하는 개인화 버전입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -6380,6 +6380,7 @@ try {
     room.autoLogPinnedKeys = Array.isArray(room.autoLogPinnedKeys) ? [...new Set(room.autoLogPinnedKeys.map(String))] : [];
     room.autoLogExcludedKeys = Array.isArray(room.autoLogExcludedKeys) ? [...new Set(room.autoLogExcludedKeys.map(String))] : [];
     room.manualLogSelectedKeys = Array.isArray(room.manualLogSelectedKeys) ? [...new Set(room.manualLogSelectedKeys.map(String))] : [];
+    room.manualSceneSelectedKeys = Array.isArray(room.manualSceneSelectedKeys) ? [...new Set(room.manualSceneSelectedKeys.map(String))] : [];
     room.favoriteLogKeys = Array.isArray(room.favoriteLogKeys) ? [...new Set(room.favoriteLogKeys.map(String))] : [];
     room.aiContextLogRerankEnabled = !!room.aiContextLogRerankEnabled;
     room.aiContextReviewReport = room.aiContextReviewReport && typeof room.aiContextReviewReport === 'object'
@@ -8443,6 +8444,50 @@ try {
 
 현재 장면의 반응은 현재 상황을 기준으로 새롭게 생성한다.`;
 
+  function sceneMemorySourceKey(block) {
+    return `scene:${String(block?.key || '')}`;
+  }
+
+  function makeSceneMemoryRecallItem(block, slot, autoType = 'manual-scene', reason = '사용자 직접 주입', extra = {}) {
+    const sourceKey = sceneMemorySourceKey(block);
+    return {
+      slotId:`scene-memory:${sourceKey}`,
+      sourceSlotId:'sceneMemory',
+      sourceKey,
+      sceneBlockKey:String(block?.key || ''),
+      autoType,
+      title:`장면 기억 ${block.fullDate}${block.events ? ` · ${block.events}` : ''}`,
+      group:'scene-memory',
+      content:`${SCENE_MEMORY_USAGE_RULES}\n\n[관련 장면 기억]\n\n${String(block.raw || '').trim()}`,
+      totalTurns:autoType === 'manual-scene' ? normalizeRetentionTurns(slot?.retentionTurns) : 1,
+      usedTurns:0,
+      recallReason:reason,
+      recallScore:extra.score ?? null,
+      sceneRelevanceScore:extra.score ?? null,
+      sceneRelevanceReason:String(extra.relevanceReason || ''),
+      recallCoreScore:null,
+      recallCharacterScore:null,
+      recallRank:extra.rank ?? null,
+      recallCandidateCount:extra.candidateCount ?? null,
+      matchedTerms:[],
+      matchedCoreTerms:[],
+      matchedCharacterTerms:[],
+      sceneDateKey:block.calendarDateKey,
+      sceneEvent:String(block.events || '').trim(),
+      logIndex:block.index,
+    };
+  }
+
+  function collectManualSceneMemoryItems(room) {
+    const slot = (room?.slots || []).find(item => item?.id === 'sceneMemory');
+    if (!slot?.enabled || !String(slot.content || '').trim()) return [];
+    const blocks = parseDatedLogBlocks(normalizeSceneMemoryBlocks(slot.content)).filter(block => block.isOrdinalDay);
+    const valid = new Set(blocks.map(block => String(block.key)));
+    const selected = new Set((room.manualSceneSelectedKeys || []).map(String).filter(key => valid.has(key)));
+    room.manualSceneSelectedKeys = [...selected];
+    return blocks.filter(block => selected.has(String(block.key))).map(block => makeSceneMemoryRecallItem(block, slot));
+  }
+
   const AI_SCENE_MEMORY_RESPONSE_SCHEMA = Object.freeze({
     type:'OBJECT',
     properties:{ key:{ type:'STRING' }, score:{ type:'NUMBER' }, reason:{ type:'STRING' } },
@@ -8533,31 +8578,13 @@ JSON 하나만 출력:
       const selected = parseSceneMemoryRelevanceResponse(result.text, candidates);
       if (!selected.candidate || selected.score < SCENE_MEMORY_RELEVANCE_THRESHOLD) return null;
       const block = selected.candidate.block;
-      const sourceKey = `scene:${block.key}:${block.index}`;
-      return {
-        slotId:`scene-memory:${sourceKey}`,
-        sourceSlotId:'sceneMemory',
-        sourceKey,
-        autoType:'related-scene',
-        title:`장면 기억 ${block.fullDate}${block.events ? ` · ${block.events}` : ''}`,
-        group:'scene-memory',
-        content:`${SCENE_MEMORY_USAGE_RULES}\n\n[관련 장면 기억]\n\n${String(block.raw || '').trim()}`,
-        totalTurns:1,
-        usedTurns:0,
-        recallReason:`장면 관련도 ${selected.score.toFixed(1)}% · API 독립 판정${selected.reason ? ` · ${selected.reason}` : ''}`,
-        recallScore:selected.score,
-        sceneRelevanceScore:selected.score,
-        recallCoreScore:null,
-        recallCharacterScore:null,
-        recallRank:1,
-        recallCandidateCount:candidates.length,
-        matchedTerms:[],
-        matchedCoreTerms:[],
-        matchedCharacterTerms:[],
-        sceneDateKey:block.calendarDateKey,
-        sceneEvent:String(block.events || '').trim(),
-        logIndex:block.index,
-      };
+      return makeSceneMemoryRecallItem(
+        block,
+        slot,
+        'related-scene',
+        `장면 관련도 ${selected.score.toFixed(1)}% · API 독립 판정${selected.reason ? ` · ${selected.reason}` : ''}`,
+        { score:selected.score, relevanceReason:selected.reason, rank:1, candidateCount:candidates.length },
+      );
     } catch (error) {
       // 장면 기억 판정 실패는 기존 로그·현재상태 주입을 막지 않습니다.
       console.warn('[RP Manager] 장면 기억 관련도 판정 실패 · 이번 턴은 장면 기억을 주입하지 않습니다.', error);
@@ -8572,6 +8599,7 @@ JSON 하나만 출력:
       room.pending.items = (Array.isArray(room.pending.items) ? room.pending.items : []).filter(item => !['related-scene','scene-paired-log'].includes(String(item?.autoType || '')));
       const selected = await selectRelevantSceneMemory(room, contextText);
       if (!selected) return null;
+      if (new Set((room.manualSceneSelectedKeys || []).map(String)).has(String(selected.sceneBlockKey || ''))) return null;
       const active = activePendingItems(room.pending);
       const limit = contextBudgetForCarrier(room, String(room.pending.originalText || '').length);
       if (buildContextBlockFromItems([...active, selected]).length > limit) return null;
@@ -9865,6 +9893,7 @@ JSON 하나만 출력:
       autoLogPinnedKeys: [],
       autoLogExcludedKeys: [],
       manualLogSelectedKeys: [],
+      manualSceneSelectedKeys: [],
       favoriteLogKeys: [],
       aiContextLogRerankEnabled: false,
       aiApiUsage: { version:1, features:{ summary:emptyRoomAiFeatureUsage(), timeline:emptyRoomAiFeatureUsage(), context:emptyRoomAiFeatureUsage() }, history:[] },
@@ -11288,6 +11317,7 @@ JSON 하나만 출력:
       });
     }
     out.push(...storyTimelineInjectionItems(room));
+    out.push(...collectManualSceneMemoryItems(room));
     const log = (room.slots || []).find(s => s.id === 'logSummary');
     if (log?.enabled && String(log.content || '').trim()) {
       const budget = contextBudget == null ? contextBudgetForPreview(room) : Number(contextBudget);
@@ -12607,7 +12637,7 @@ JSON 하나만 출력:
       autoLogRecallEnabled:!!room?.autoLogRecallEnabled,
       autoLogRecentBlocks:Number(room?.autoLogRecentBlocks || 0),
       autoLogRelatedBlocks:Number(room?.autoLogRelatedBlocks || 0),
-      autoLogPinnedKeys:room?.autoLogPinnedKeys || [], autoLogExcludedKeys:room?.autoLogExcludedKeys || [], manualLogSelectedKeys:room?.manualLogSelectedKeys || [], favoriteLogKeys:room?.favoriteLogKeys || [], aiContextLogRerankEnabled:!!room?.aiContextLogRerankEnabled,
+      autoLogPinnedKeys:room?.autoLogPinnedKeys || [], autoLogExcludedKeys:room?.autoLogExcludedKeys || [], manualLogSelectedKeys:room?.manualLogSelectedKeys || [], manualSceneSelectedKeys:room?.manualSceneSelectedKeys || [], favoriteLogKeys:room?.favoriteLogKeys || [], aiContextLogRerankEnabled:!!room?.aiContextLogRerankEnabled,
       aiApiUsage:room?.aiApiUsage || { version:1, features:{ summary:emptyRoomAiFeatureUsage(), timeline:emptyRoomAiFeatureUsage(), context:emptyRoomAiFeatureUsage() }, history:[] },
       storyTimelineCards:(room?.storyTimelineCards || []).map(card => ({ cardId:card.cardId, timelineLabel:card.timelineLabel, dateStart:card.dateStart, dateEnd:card.dateEnd, title:card.title, content:card.content, tags:card.tags || [], userLocked:!!card.userLocked, inject:card.inject !== false, sortOrder:Number(card.sortOrder || 0) })), storyTimelineCarryoverTurnKeys:room?.storyTimelineCarryoverTurnKeys || [], storyTimelineApiHistory:room?.storyTimelineApiHistory || [], storyTimelineAuditHistory:room?.storyTimelineAuditHistory || [], storyTimelineManualRun:room?.storyTimelineManualRun || null,
       storyLogReviews:room?.storyLogReviews || [], storyTimelineGuide:String(room?.storyTimelineGuide || STORY_TIMELINE_GUIDE_V15), storyTimelineGuideSource:String(room?.storyTimelineGuideSource || ''), storyTimelineGuideRevisionV15:!!room?.storyTimelineGuideRevisionV15, storyTimelinePendingReview:room?.storyTimelinePendingReview || null,
@@ -13279,14 +13309,26 @@ JSON 하나만 출력:
   async function replacePendingSceneMemoryItems(room) {
     if (!room?.pending) return 0;
     const items = Array.isArray(room.pending.items) ? room.pending.items : (room.pending.items = []);
+    const previousScenes = activePendingItems(room.pending).filter(item => item?.sourceSlotId === 'sceneMemory');
+    const previousByBlock = new Map(previousScenes.map(item => [String(item.sceneBlockKey || ''), item]));
     room.pending.items = items.filter(item => item?.slotId !== 'sceneMemory' && item?.autoType !== 'related-scene' && item?.autoType !== 'scene-paired-log');
-    const sceneItem = await selectRelevantSceneMemory(room, room.autoRecallContextText || '');
-    if (!sceneItem) return 0;
-    const active = activePendingItems(room.pending);
+    room.pending.items = room.pending.items.filter(item => item?.sourceSlotId !== 'sceneMemory');
     const limit = contextBudgetForCarrier(room, String(room.pending.originalText || '').length);
-    if (buildContextBlockFromItems([...active, sceneItem]).length > limit) return 0;
+    let added = 0;
+    for (const manualItem of collectManualSceneMemoryItems(room)) {
+      const previous = previousByBlock.get(String(manualItem.sceneBlockKey || ''));
+      if (previous) manualItem.usedTurns = Number(previous.usedTurns || 0);
+      const active = activePendingItems(room.pending);
+      if (buildContextBlockFromItems([...active, manualItem]).length > limit) continue;
+      room.pending.items.push(manualItem);
+      added++;
+    }
+    const sceneItem = await selectRelevantSceneMemory(room, room.autoRecallContextText || '');
+    if (!sceneItem || new Set((room.manualSceneSelectedKeys || []).map(String)).has(String(sceneItem.sceneBlockKey || ''))) return added;
+    const active = activePendingItems(room.pending);
+    if (buildContextBlockFromItems([...active, sceneItem]).length > limit) return added;
     room.pending.items.push(sceneItem);
-    return 1;
+    return added + 1;
   }
 
   async function rebuildPendingLogItems(room, reason = 'log-mode-change') {
@@ -13992,6 +14034,10 @@ JSON 하나만 출력:
     if (resolvedType === 'manual-log' && resolvedKey) {
       room.manualLogSelectedKeys = (room.manualLogSelectedKeys || []).map(String).filter(key => key !== resolvedKey);
     }
+    if (resolvedType === 'manual-scene' && resolvedKey) {
+      const sceneKey = String(current?.sceneBlockKey || resolvedKey.replace(/^scene:/, ''));
+      room.manualSceneSelectedKeys = (room.manualSceneSelectedKeys || []).map(String).filter(key => key !== sceneKey);
+    }
 
     if (!pending) {
       if (!resolvedKey) throw new Error('빼 로그를 찾지 못했습니다.');
@@ -14037,6 +14083,10 @@ JSON 하나만 출력:
       : null;
     const previousKey = String(previous?.sourceKey || '').replace(/^auto-log:/, '');
     if (previous?.autoType === 'manual-log' && previousKey) manual.delete(previousKey);
+    if (previous?.autoType === 'manual-scene') {
+      const previousSceneKey = String(previous.sceneBlockKey || previousKey.replace(/^scene:/, ''));
+      room.manualSceneSelectedKeys = (room.manualSceneSelectedKeys || []).map(String).filter(key => key !== previousSceneKey);
+    }
     if (['related-log','recent-log','pinned-log'].includes(String(previous?.autoType || '')) && previousKey) {
       excluded.add(previousKey);
       if (previous?.autoType === 'pinned-log') {
@@ -14074,32 +14124,98 @@ JSON 하나만 출력:
     await saveRoom(room);
   }
 
+  async function applyManualSceneMemory(room, blockKey, replaceIdentity = '') {
+    const slot = (room?.slots || []).find(item => item.id === 'sceneMemory');
+    const blocks = parseDatedLogBlocks(normalizeSceneMemoryBlocks(slot?.content || '')).filter(block => block.isOrdinalDay);
+    const block = blocks.find(item => String(item.key) === String(blockKey));
+    if (!slot || !block) throw new Error('선택한 장면 기억을 찾지 못했습니다.');
+
+    const manualScenes = new Set((room.manualSceneSelectedKeys || []).map(String));
+    const manualLogs = new Set((room.manualLogSelectedKeys || []).map(String));
+    const excludedLogs = new Set((room.autoLogExcludedKeys || []).map(String));
+    const pending = room.pending;
+    const visibleItems = pending ? activePendingItems(pending) : snapshotSelectedItems(room);
+    const previous = replaceIdentity ? visibleItems.find(item => pendingItemIdentity(item) === replaceIdentity) : null;
+    const previousSourceKey = String(previous?.sourceKey || '').replace(/^auto-log:/, '');
+    if (previous?.autoType === 'manual-scene') manualScenes.delete(String(previous.sceneBlockKey || previousSourceKey.replace(/^scene:/, '')));
+    if (previous?.autoType === 'manual-log' && previousSourceKey) manualLogs.delete(previousSourceKey);
+    if (['related-log','recent-log','pinned-log'].includes(String(previous?.autoType || '')) && previousSourceKey) {
+      excludedLogs.add(previousSourceKey);
+      if (previous?.autoType === 'pinned-log') room.autoLogPinnedKeys = (room.autoLogPinnedKeys || []).map(String).filter(key => key !== previousSourceKey);
+    }
+    manualScenes.add(String(block.key));
+
+    if (pending) {
+      const next = makeSceneMemoryRecallItem(block, slot);
+      const remaining = activePendingItems(pending).filter(item => {
+        const id = pendingItemIdentity(item);
+        return id !== replaceIdentity && id !== pendingItemIdentity(next);
+      });
+      const budget = contextBudgetForCarrier(room, String(pending.originalText || '').length);
+      if (buildContextBlockFromItems([...remaining, next]).length > budget) {
+        throw new Error('주입 한도를 넘어 이 장면 기억을 추가할 수 없습니다. 다른 항목을 먼저 빼 주세요.');
+      }
+      if (previous && replaceIdentity) {
+        const removed = quickRemovedPendingItems(pending);
+        if (!removed.some(item => pendingItemIdentity(item) === replaceIdentity)) removed.push({ ...previous });
+        pending.quickRemovedItems = removed;
+      }
+      pending.quickRemovedItems = quickRemovedPendingItems(pending).filter(item => String(item?.sceneBlockKey || '') !== String(block.key));
+      pending.items = [...remaining, next];
+      await syncPendingCarrier(room, replaceIdentity ? 'main-scene-memory-manual-replace' : 'main-scene-memory-manual-add');
+    }
+
+    room.manualSceneSelectedKeys = [...manualScenes];
+    room.manualLogSelectedKeys = [...manualLogs];
+    room.autoLogExcludedKeys = [...excludedLogs];
+    await saveRoom(room);
+  }
+
+  async function applyManualRelatedSelection(room, selection, replaceIdentity = '') {
+    const kind = String(selection?.kind || 'log');
+    const key = String(selection?.key || selection || '');
+    if (!key) throw new Error('선택 항목을 확인하지 못했습니다.');
+    if (kind === 'scene') return applyManualSceneMemory(room, key, replaceIdentity);
+    return applyManualRelatedLog(room, key, replaceIdentity);
+  }
+
   function openRelatedLogPickerDialog(room, { replaceIdentity = '' } = {}) {
     return new Promise(resolve => {
       document.querySelector('#rpcm-related-picker-backdrop')?.remove();
-      const slot = (room?.slots || []).find(item => item.id === 'logSummary');
-      const blocks = parseDatedLogBlocks(slot?.content || '');
-      if (!blocks.length) { notify('선택할 날짜로그가 없습니다.', 'warn'); resolve(null); return; }
+      const logSlot = (room?.slots || []).find(item => item.id === 'logSummary');
+      const sceneSlot = (room?.slots || []).find(item => item.id === 'sceneMemory');
+      const logBlocks = parseDatedLogBlocks(logSlot?.content || '');
+      const sceneBlocks = parseDatedLogBlocks(normalizeSceneMemoryBlocks(sceneSlot?.content || '')).filter(block => block.isOrdinalDay);
+      const choices = [
+        ...logBlocks.map(block => ({ kind:'log', block })),
+        ...sceneBlocks.map(block => ({ kind:'scene', block })),
+      ];
+      if (!choices.length) { notify('선택할 로그요약 또는 장면 기억이 없습니다.', 'warn'); resolve(null); return; }
 
       const activeItems = room.pending ? activePendingItems(room.pending) : snapshotSelectedItems(room);
-      const activeKeys = new Set(activeItems.filter(item => item.sourceSlotId === 'logSummary' || item.group === 'log-auto').map(item => String(item.sourceKey || '').replace(/^auto-log:/, '')));
+      const activeLogKeys = new Set(activeItems.filter(item => item.sourceSlotId === 'logSummary' || item.group === 'log-auto').map(item => String(item.sourceKey || '').replace(/^auto-log:/, '')));
+      const activeSceneKeys = new Set(activeItems.filter(item => item.sourceSlotId === 'sceneMemory').map(item => String(item.sceneBlockKey || String(item.sourceKey || '').replace(/^scene:/, ''))));
       const replacing = activeItems.find(item => pendingItemIdentity(item) === replaceIdentity);
-      const replacingKey = String(replacing?.sourceKey || '').replace(/^auto-log:/, '');
+      const replacingKind = replacing?.sourceSlotId === 'sceneMemory' ? 'scene' : 'log';
+      const replacingKey = replacingKind === 'scene'
+        ? String(replacing?.sceneBlockKey || String(replacing?.sourceKey || '').replace(/^scene:/, ''))
+        : String(replacing?.sourceKey || '').replace(/^auto-log:/, '');
       const favorites = new Set((room.favoriteLogKeys || []).map(String));
-      const recentKeys = new Set(blocks.slice(-10).map(block => String(block.key)));
-      const scored = scoreRelatedLogBlocks(blocks, room.autoRecallContextText || '', new Set(), room);
+      const recentKeys = new Set(logBlocks.slice(-10).map(block => String(block.key)));
+      const scored = scoreRelatedLogBlocks(logBlocks, room.autoRecallContextText || '', new Set(), room);
       const scoreByKey = new Map(scored.map((item, index) => [String(item.block.key), { ...item, rank:index + 1 }]));
-      const timelines = [...new Set(blocks.map(logTimelineLabelOfBlock).filter(Boolean))];
+      const timelines = [...new Set(choices.map(choice => logTimelineLabelOfBlock(choice.block)).filter(Boolean))];
       const expanded = new Set();
-      const filters = { search:'', date:'', keyword:'', timeline:'', favorites:false, recent:false };
+      const filters = { search:'', date:'', keyword:'', timeline:'', kind:'', favorites:false, recent:false };
       const backdrop = document.createElement('div');
       backdrop.id = 'rpcm-related-picker-backdrop';
-      backdrop.innerHTML = `<div class="rpcm-related-picker" role="dialog" aria-modal="true" aria-label="관련로그 선택"><header><div><h2>${replaceIdentity ? '관련로그 교체' : '관련로그 추가'}</h2><p>본문을 펼쳐 확인한 뒤 ‘선택’을 누르세요. AI 후보가 아닌 전체 날짜로그도 고를 수 있습니다.</p></div><button type="button" data-related-act="close" aria-label="닫기">✕</button></header><div class="rpcm-related-picker-filters"><label class="wide"><span>통합 검색</span><input type="search" data-related-filter="search" placeholder="제목·날짜·키워드·본문"></label><label><span>날짜</span><input type="search" data-related-filter="date" placeholder="2027.10.25"></label><label><span>키워드</span><input type="search" data-related-filter="keyword" placeholder="인물·사건"></label><label><span>시간선</span><select data-related-filter="timeline"><option value="">전체 시간선</option>${timelines.map(label => `<option value="${esc(label)}">${esc(label)}</option>`).join('')}</select></label><label class="check"><input type="checkbox" data-related-filter="favorites"> ★ 즐겨찾기만</label><label class="check"><input type="checkbox" data-related-filter="recent"> 최근 10개만</label></div><div class="rpcm-related-picker-count"></div><div class="rpcm-related-picker-list"></div><footer><span>펼쳐보기는 선택으로 처리되지 않습니다.</span><button type="button" class="rpcm-btn secondary" data-related-act="close">취소</button></footer></div>`;
+      backdrop.innerHTML = `<div class="rpcm-related-picker" role="dialog" aria-modal="true" aria-label="관련로그 선택"><header><div><h2>${replaceIdentity ? '관련로그 교체' : '관련로그 추가'}</h2><p>로그요약과 장면 기억에서 직접 주입할 블록을 고릅니다. 장면 기억은 남색으로 구분됩니다.</p></div><button type="button" data-related-act="close" aria-label="닫기">✕</button></header><div class="rpcm-related-picker-filters"><label class="wide"><span>통합 검색</span><input type="search" data-related-filter="search" placeholder="제목·날짜·키워드·본문"></label><label><span>종류</span><select data-related-filter="kind"><option value="">전체</option><option value="log">로그요약</option><option value="scene">장면 기억</option></select></label><label><span>날짜</span><input type="search" data-related-filter="date" placeholder="12일차"></label><label><span>키워드</span><input type="search" data-related-filter="keyword" placeholder="인물·사건"></label><label><span>시간선</span><select data-related-filter="timeline"><option value="">전체 시간선</option>${timelines.map(label => `<option value="${esc(label)}">${esc(label)}</option>`).join('')}</select></label><label class="check"><input type="checkbox" data-related-filter="favorites"> ★ 로그 즐겨찾기만</label><label class="check"><input type="checkbox" data-related-filter="recent"> 최근 로그 10개만</label></div><div class="rpcm-related-picker-count"></div><div class="rpcm-related-picker-list"></div><footer><span>하늘색은 로그요약 · 남색은 장면 기억입니다.</span><button type="button" class="rpcm-btn secondary" data-related-act="close">취소</button></footer></div>`;
       document.body.appendChild(backdrop);
       const list = backdrop.querySelector('.rpcm-related-picker-list');
       const count = backdrop.querySelector('.rpcm-related-picker-count');
 
-      const filteredBlocks = () => blocks.filter(block => {
+      const filteredChoices = () => choices.filter(choice => {
+        const block = choice.block;
         const key = String(block.key);
         const heading = String(block.heading || block.titleText || '');
         const content = String(block.raw || '');
@@ -14107,29 +14223,37 @@ JSON 하나만 출력:
         const search = filters.search.toLowerCase();
         const date = filters.date.toLowerCase();
         const keyword = filters.keyword.toLowerCase();
+        if (filters.kind && choice.kind !== filters.kind) return false;
         if (search && !`${heading}\n${content}\n${timeline}`.toLowerCase().includes(search)) return false;
         if (date && !`${block.fullDate || ''}\n${heading}`.toLowerCase().includes(date)) return false;
         if (keyword && !`${heading}\n${block.events || ''}\n${content}`.toLowerCase().includes(keyword)) return false;
         if (filters.timeline && normalizedLogTimelineKey(timeline) !== normalizedLogTimelineKey(filters.timeline)) return false;
-        if (filters.favorites && !favorites.has(key)) return false;
-        if (filters.recent && !recentKeys.has(key)) return false;
+        if (filters.favorites && (choice.kind !== 'log' || !favorites.has(key))) return false;
+        if (filters.recent && (choice.kind !== 'log' || !recentKeys.has(key))) return false;
         return true;
       }).sort((a, b) => {
-        const ar = scoreByKey.get(String(a.key))?.rank || 999999;
-        const br = scoreByKey.get(String(b.key))?.rank || 999999;
-        return ar - br || Number(b.index || 0) - Number(a.index || 0);
+        if (a.kind !== b.kind) return a.kind === 'log' ? -1 : 1;
+        const ar = a.kind === 'log' ? scoreByKey.get(String(a.block.key))?.rank || 999999 : 999999;
+        const br = b.kind === 'log' ? scoreByKey.get(String(b.block.key))?.rank || 999999 : 999999;
+        return ar - br || Number(b.block.index || 0) - Number(a.block.index || 0);
       });
 
       const renderList = () => {
-        const visible = filteredBlocks();
-        count.textContent = `${visible.length}/${blocks.length}개 로그${scoreByKey.size ? ' · AI 후보 우선 표시' : ''}`;
-        list.innerHTML = visible.length ? visible.map(block => {
+        const visible = filteredChoices();
+        count.textContent = `${visible.length}/${choices.length}개 · 로그요약 ${logBlocks.length}개 · 장면 기억 ${sceneBlocks.length}개${scoreByKey.size ? ' · 로그 AI 후보 우선 표시' : ''}`;
+        list.innerHTML = visible.length ? visible.map(choice => {
+          const block = choice.block;
           const key = String(block.key);
-          const ai = scoreByKey.get(key);
-          const already = activeKeys.has(key) && key !== replacingKey;
-          const isOpen = expanded.has(key);
-          return `<article class="rpcm-related-picker-card${favorites.has(key) ? ' is-favorite' : ''}${already ? ' is-active' : ''}" data-related-key="${esc(key)}"><div class="rpcm-related-picker-row"><button type="button" class="rpcm-related-star" data-related-act="favorite" aria-label="${favorites.has(key) ? '즐겨찾기 해제' : '즐겨찾기 추가'}">${favorites.has(key) ? '★' : '☆'}</button><div><strong>${esc(block.titleText || block.heading || '날짜로그')}</strong><span>${esc(logTimelineLabelOfBlock(block))}${ai ? ` · AI 후보 ${ai.rank}위 · 관련도 ${Number(ai.score || 0).toFixed(1)}` : ''}${already ? ' · 이미 주입 중' : ''}</span></div><button type="button" data-related-act="toggle">${isOpen ? '내용 접기 ▲' : '내용 보기 ▼'}</button><button type="button" class="primary" data-related-act="select" ${already ? 'disabled' : ''}>선택</button></div><pre ${isOpen ? '' : 'hidden'}>${esc(String(block.raw || '').trim())}</pre></article>`;
-        }).join('') : '<div class="rpcm-story-empty compact">조건에 맞는 날짜로그가 없습니다.</div>';
+          const choiceKey = `${choice.kind}:${key}`;
+          const ai = choice.kind === 'log' ? scoreByKey.get(key) : null;
+          const activeKeys = choice.kind === 'scene' ? activeSceneKeys : activeLogKeys;
+          const already = activeKeys.has(key) && !(choice.kind === replacingKind && key === replacingKey);
+          const isOpen = expanded.has(choiceKey);
+          const favoriteControl = choice.kind === 'log'
+            ? `<button type="button" class="rpcm-related-star" data-related-act="favorite" aria-label="${favorites.has(key) ? '즐겨찾기 해제' : '즐겨찾기 추가'}">${favorites.has(key) ? '★' : '☆'}</button>`
+            : '<span class="rpcm-related-star-spacer" aria-hidden="true">🎞</span>';
+          return `<article class="rpcm-related-picker-card is-${choice.kind}${choice.kind === 'log' && favorites.has(key) ? ' is-favorite' : ''}${already ? ' is-active' : ''}" data-related-kind="${choice.kind}" data-related-key="${esc(key)}"><div class="rpcm-related-picker-row">${favoriteControl}<div><strong><span class="rpcm-related-source is-${choice.kind}">${choice.kind === 'scene' ? '장면 기억' : '로그요약'}</span>${esc(block.titleText || block.heading || (choice.kind === 'scene' ? '장면 기억' : '날짜로그'))}</strong><span>${esc(logTimelineLabelOfBlock(block))}${ai ? ` · AI 후보 ${ai.rank}위 · 관련도 ${Number(ai.score || 0).toFixed(1)}` : ''}${already ? ' · 이미 주입 중' : ''}</span></div><button type="button" data-related-act="toggle">${isOpen ? '내용 접기 ▲' : '내용 보기 ▼'}</button><button type="button" class="primary" data-related-act="select" ${already ? 'disabled' : ''}>선택</button></div><pre ${isOpen ? '' : 'hidden'}>${esc(String(block.raw || '').trim())}</pre></article>`;
+        }).join('') : '<div class="rpcm-story-empty compact">조건에 맞는 로그요약 또는 장면 기억이 없습니다.</div>';
       };
 
       const finish = value => { backdrop.remove(); resolve(value); };
@@ -14146,16 +14270,19 @@ JSON 하나만 출력:
         const card = button?.closest('[data-related-key]');
         if (!button || !card) return;
         const key = String(card.dataset.relatedKey || '');
+        const kind = String(card.dataset.relatedKind || 'log');
+        const choiceKey = `${kind}:${key}`;
         const action = button.dataset.relatedAct;
-        if (action === 'toggle') { if (expanded.has(key)) expanded.delete(key); else expanded.add(key); renderList(); return; }
+        if (action === 'toggle') { if (expanded.has(choiceKey)) expanded.delete(choiceKey); else expanded.add(choiceKey); renderList(); return; }
         if (action === 'favorite') {
+          if (kind !== 'log') return;
           if (favorites.has(key)) favorites.delete(key); else favorites.add(key);
           room.favoriteLogKeys = [...favorites];
           await saveRoom(room);
           renderList();
           return;
         }
-        if (action === 'select') finish(key);
+        if (action === 'select') finish({ kind, key });
       });
       backdrop.querySelectorAll('[data-related-act="close"]').forEach(button => button.onclick = () => finish(null));
       backdrop.onclick = event => { if (event.target === backdrop) finish(null); };
@@ -14240,7 +14367,8 @@ JSON 하나만 출력:
     // API가 실패하면 이미 계산된 로컬 키워드 결과를 그대로 사용합니다.
     items = await rerankInitialRelatedLogItems(room, items, recallText, initialContextBudget);
     const initialScene = await selectRelevantSceneMemory(room, recallText);
-    if (initialScene && buildContextBlockFromItems([...items, initialScene]).length <= initialContextBudget) items.push(initialScene);
+    const initialSceneAlreadySelected = initialScene && items.some(item => item.sourceSlotId === 'sceneMemory' && String(item.sceneBlockKey || '') === String(initialScene.sceneBlockKey || ''));
+    if (initialScene && !initialSceneAlreadySelected && buildContextBlockFromItems([...items, initialScene]).length <= initialContextBudget) items.push(initialScene);
     items = fitItemsToCarrierLimits(room, cleanOriginal, items);
     const contextBlock = buildContextBlockFromItems(items);
     if (!contextBlock) throw new Error('주입할 항목이 없습니다. 현재상태/캐릭터/기타 또는 날짜 로그의 직접 주입·최근·관련 자동 선택 설정을 확인해 주세요.');
@@ -15280,7 +15408,7 @@ JSON 하나만 출력:
       .rpcm-story-range-grid{align-items:stretch}.rpcm-story-range-mode,.rpcm-story-range-stat{box-sizing:border-box;min-width:0;padding:11px 12px;border:1px solid #bae6fd;border-radius:9px}.rpcm-story-range-stat{display:flex;flex-direction:column;justify-content:center;gap:5px}.rpcm-story-range-stat span{font-size:10px;line-height:1.35}.rpcm-story-range-stat strong{display:block;font-size:13px;line-height:1.45;overflow-wrap:anywhere}.rpcm-story-range-copy{margin:12px 1px 0;font-size:10px;line-height:1.7}.rpcm-story-token-top{display:flex;align-items:center;gap:14px}.rpcm-story-token-top>div{display:flex;min-width:0;flex:1;flex-direction:column;gap:2px}.rpcm-story-api-generate{flex:0 0 auto}
       .rpcm-story-options{color:#afc5c9!important}.rpcm-story-card-top button{border-color:#bae6fd!important;background:#f0f9ff!important;color:#0369a1!important}.rpcm-story-import-summary strong{color:#0369a1!important}.rpcm-story-import-summary span,.rpcm-story-review-status,.rpcm-story-result-choice span,.rpcm-story-last-diff,.rpcm-story-last-diff span,.rpcm-story-last-diff button,.rpcm-story-diff-counts b{color:#8eacb1!important}.rpcm-story-preview-tabs button{border-color:#bae6fd!important;background:#fff!important;color:#9eb8bd!important}.rpcm-story-date-indicator strong{color:#0369a1!important}.rpcm-story-date-indicator button{color:#0369a1!important}.rpcm-story-update-logs>summary{color:#0369a1!important}.rpcm-story-update-logs>summary span{color:#88a7ac!important}.rpcm-story-exchange-head strong{color:#0369a1!important}.rpcm-story-exchange-head span{color:#819fa5!important}.rpcm-story-settings{color:#b2c8cc!important}.rpcm-story-drag{color:#0369a1!important}.rpcm-story-merge-check{color:#99b8bd!important}.rpcm-story-settings-panel header,.rpcm-story-settings-panel footer{border-color:#bae6fd!important}
 
-      #rpcm-related-picker-backdrop{position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:18px;box-sizing:border-box;background:rgba(51,65,85,.28);font-family:-apple-system,BlinkMacSystemFont,"Pretendard",sans-serif}.rpcm-related-picker{display:flex;flex-direction:column;width:min(1040px,96vw);height:min(840px,92vh);overflow:hidden;border:1px solid #7dd3fc;border-radius:15px;background:#fff;color:#273444;box-shadow:0 28px 90px rgba(51,65,85,.72)}.rpcm-related-picker>header{display:flex;align-items:flex-start;gap:12px;padding:16px 18px;border-bottom:1px solid #d8e2ec}.rpcm-related-picker>header>div{flex:1;min-width:0}.rpcm-related-picker h2{margin:0;color:#0369a1;font-size:17px}.rpcm-related-picker header p{margin:5px 0 0;color:#66778a;font-size:10px;line-height:1.55}.rpcm-related-picker>header>button{border:0;background:transparent;color:#66778a;font-size:19px;cursor:pointer}.rpcm-related-picker-filters{display:grid;grid-template-columns:minmax(220px,2fr) minmax(120px,1fr) minmax(120px,1fr) minmax(130px,1fr);gap:8px;padding:12px 14px;border-bottom:1px solid #d8e2ec;background:#fff}.rpcm-related-picker-filters label{display:flex;min-width:0;flex-direction:column;gap:4px;color:#66778a;font-size:9px}.rpcm-related-picker-filters input,.rpcm-related-picker-filters select{box-sizing:border-box;width:100%;height:34px;border:1px solid #7dd3fc;border-radius:7px;background:#fff;color:#273444;padding:0 9px;outline:none}.rpcm-related-picker-filters input:focus,.rpcm-related-picker-filters select:focus{border-color:#7dd3fc;box-shadow:0 0 0 2px rgba(56,189,248,.12)}.rpcm-related-picker-filters label.check{display:inline-flex;min-height:30px;flex-direction:row;align-items:center;gap:6px}.rpcm-related-picker-filters label.check input{width:17px;height:17px;accent-color:#0284c7}.rpcm-related-picker-count{padding:8px 15px;color:#66778a;font-size:9px;border-bottom:1px solid #d8e2ec}.rpcm-related-picker-list{flex:1;min-height:0;overflow:auto;padding:10px 13px}.rpcm-related-picker-card{margin:0 0 8px;border:1px solid #d8e2ec;border-radius:10px;background:#fff;overflow:hidden}.rpcm-related-picker-card.is-favorite{border-color:#bae6fd}.rpcm-related-picker-card.is-active{opacity:.62}.rpcm-related-picker-row{display:grid;grid-template-columns:30px minmax(0,1fr) auto auto;gap:8px;align-items:center;padding:10px}.rpcm-related-picker-row>div{display:flex;min-width:0;flex-direction:column;gap:3px}.rpcm-related-picker-row strong{color:#273444;font-size:11px;overflow-wrap:anywhere}.rpcm-related-picker-row span{color:#66778a;font-size:9px}.rpcm-related-picker-row button{height:30px;border:1px solid #d8e2ec;border-radius:7px;background:#fff;color:#66778a;padding:0 9px;font-size:9px;cursor:pointer;white-space:nowrap}.rpcm-related-picker-row button.primary{border-color:#7dd3fc;background:#0284c7;color:#273444;font-weight:800}.rpcm-related-picker-row button:hover{border-color:#7dd3fc;color:#273444}.rpcm-related-picker-row button:disabled{opacity:.42;cursor:not-allowed}.rpcm-related-star{padding:0!important;border:0!important;background:transparent!important;color:#66778a!important;font-size:18px!important}.rpcm-related-picker-card.is-favorite .rpcm-related-star{color:#92400e!important;text-shadow:0 0 8px rgba(255,216,61,.25)}.rpcm-related-picker-card pre{max-height:300px;overflow:auto;margin:0;padding:11px 13px;border-top:1px solid #d8e2ec;background:#fff;color:#66778a;white-space:pre-wrap;word-break:break-word;font:10px/1.58 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.rpcm-related-picker>footer{display:flex;align-items:center;gap:9px;padding:11px 14px;border-top:1px solid #d8e2ec;background:#f8fafc}.rpcm-related-picker>footer span{flex:1;color:#66778a;font-size:9px}
+      #rpcm-related-picker-backdrop{position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:18px;box-sizing:border-box;background:rgba(51,65,85,.28);font-family:-apple-system,BlinkMacSystemFont,"Pretendard",sans-serif}.rpcm-related-picker{display:flex;flex-direction:column;width:min(1040px,96vw);height:min(840px,92vh);overflow:hidden;border:1px solid #7dd3fc;border-radius:15px;background:#fff;color:#273444;box-shadow:0 28px 90px rgba(51,65,85,.72)}.rpcm-related-picker>header{display:flex;align-items:flex-start;gap:12px;padding:16px 18px;border-bottom:1px solid #d8e2ec}.rpcm-related-picker>header>div{flex:1;min-width:0}.rpcm-related-picker h2{margin:0;color:#0369a1;font-size:17px}.rpcm-related-picker header p{margin:5px 0 0;color:#66778a;font-size:10px;line-height:1.55}.rpcm-related-picker>header>button{border:0;background:transparent;color:#66778a;font-size:19px;cursor:pointer}.rpcm-related-picker-filters{display:grid;grid-template-columns:minmax(220px,2fr) minmax(105px,.8fr) minmax(105px,.8fr) minmax(120px,1fr) minmax(130px,1fr);gap:8px;padding:12px 14px;border-bottom:1px solid #d8e2ec;background:#fff}.rpcm-related-picker-filters label{display:flex;min-width:0;flex-direction:column;gap:4px;color:#66778a;font-size:9px}.rpcm-related-picker-filters input,.rpcm-related-picker-filters select{box-sizing:border-box;width:100%;height:34px;border:1px solid #7dd3fc;border-radius:7px;background:#fff;color:#273444;padding:0 9px;outline:none}.rpcm-related-picker-filters input:focus,.rpcm-related-picker-filters select:focus{border-color:#7dd3fc;box-shadow:0 0 0 2px rgba(56,189,248,.12)}.rpcm-related-picker-filters label.check{display:inline-flex;min-height:30px;flex-direction:row;align-items:center;gap:6px}.rpcm-related-picker-filters label.check input{width:17px;height:17px;accent-color:#0284c7}.rpcm-related-picker-count{padding:8px 15px;color:#66778a;font-size:9px;border-bottom:1px solid #d8e2ec}.rpcm-related-picker-list{flex:1;min-height:0;overflow:auto;padding:10px 13px}.rpcm-related-picker-card{margin:0 0 8px;border:1px solid #d8e2ec;border-radius:10px;background:#fff;overflow:hidden}.rpcm-related-picker-card.is-favorite{border-color:#bae6fd}.rpcm-related-picker-card.is-active{opacity:.62}.rpcm-related-picker-row{display:grid;grid-template-columns:30px minmax(0,1fr) auto auto;gap:8px;align-items:center;padding:10px}.rpcm-related-picker-row>div{display:flex;min-width:0;flex-direction:column;gap:3px}.rpcm-related-picker-row strong{color:#273444;font-size:11px;overflow-wrap:anywhere}.rpcm-related-picker-row span{color:#66778a;font-size:9px}.rpcm-related-picker-row button{height:30px;border:1px solid #d8e2ec;border-radius:7px;background:#fff;color:#66778a;padding:0 9px;font-size:9px;cursor:pointer;white-space:nowrap}.rpcm-related-picker-row button.primary{border-color:#7dd3fc;background:#0284c7;color:#273444;font-weight:800}.rpcm-related-picker-row button:hover{border-color:#7dd3fc;color:#273444}.rpcm-related-picker-row button:disabled{opacity:.42;cursor:not-allowed}.rpcm-related-star{padding:0!important;border:0!important;background:transparent!important;color:#66778a!important;font-size:18px!important}.rpcm-related-star-spacer{display:flex;align-items:center;justify-content:center;font-size:15px}.rpcm-related-picker-card.is-favorite .rpcm-related-star{color:#92400e!important;text-shadow:0 0 8px rgba(255,216,61,.25)}.rpcm-related-picker-card pre{max-height:300px;overflow:auto;margin:0;padding:11px 13px;border-top:1px solid #d8e2ec;background:#fff;color:#66778a;white-space:pre-wrap;word-break:break-word;font:10px/1.58 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.rpcm-related-picker>footer{display:flex;align-items:center;gap:9px;padding:11px 14px;border-top:1px solid #d8e2ec;background:#f8fafc}.rpcm-related-picker>footer span{flex:1;color:#66778a;font-size:9px}
 
       #rpcm-ai-backdrop .rpcm-ai-input-preview.safe,#rpcm-ai-backdrop .rpcm-ai-status.success,#rpcm-ai-backdrop .rpcm-ai-connection-state.ready{border-color:#86efac!important;background:#f0fdf4!important;color:#15803d!important}#rpcm-ai-backdrop .rpcm-ai-input-preview.safe .rpcm-ai-meter>span,#rpcm-ai-backdrop .rpcm-ai-meter>span{background:#f0fdf4!important}#rpcm-ai-backdrop .rpcm-ai-diff.added,#rpcm-ai-backdrop .rpcm-ai-result-tab.active{border-color:#7dd3fc!important;background:#f0f9ff!important;color:#0369a1!important}
 
@@ -15318,6 +15446,7 @@ JSON 하나만 출력:
       .rpcm-preview-card{background:#fff!important;border-color:var(--rpcm-light-border)!important}.rpcm-preview-card summary:hover,.rpcm-import-row:hover{background:#f0f9ff!important}.rpcm-preview-card[open] summary,.rpcm-preview-card pre,.rpcm-import-note{border-color:var(--rpcm-light-border)!important}.rpcm-preview-card pre{background:#f8fafc!important;color:#475569!important}.rpcm-preview-kind{color:#334155!important}.rpcm-preview-meta,.rpcm-import-group-title,.rpcm-import-row small{color:var(--rpcm-light-muted)!important}.rpcm-preview-reason,.rpcm-preview-evidence,.rpcm-import-diff{color:#3b82a8!important}.rpcm-import-row.is-current{background:#f0f9ff!important}.rpcm-import-row input{accent-color:var(--rpcm-light-accent-strong)!important}.rpcm-import-row strong{color:var(--rpcm-light-text)!important}.rpcm-import-note{background:#f8fafc!important;color:var(--rpcm-light-muted)!important}
       #rpcm-quick-trigger{border-color:#7dd3fc!important;background:rgba(255,255,255,.97)!important;color:#0369a1!important;box-shadow:0 8px 24px rgba(51,65,85,.16)!important}#rpcm-quick-trigger:hover{background:#e0f2fe!important;color:#075985!important}#rpcm-quick-trigger>em{background:var(--rpcm-light-accent)!important;color:#fff!important}#rpcm-quick-backdrop{color:var(--rpcm-light-text)!important}#rpcm-quick-backdrop .rpcm-quick-shade{background:rgba(51,65,85,.25)!important}.rpcm-quick-panel{background:var(--rpcm-light-bg)!important;border-color:var(--rpcm-light-border)!important;box-shadow:-24px 0 60px rgba(51,65,85,.2)!important}.rpcm-quick-head,.rpcm-quick-foot{background:#fff!important;border-color:var(--rpcm-light-border)!important}.rpcm-quick-head span,.rpcm-quick-note,.rpcm-quick-copy small,.rpcm-quick-foot>span{color:var(--rpcm-light-muted)!important}.rpcm-quick-note{background:#f8fafc!important;border-color:var(--rpcm-light-border)!important}.rpcm-quick-group-title{color:var(--rpcm-light-accent-strong)!important}.rpcm-quick-row{background:#fff!important;border-color:var(--rpcm-light-border)!important}.rpcm-quick-row:hover{background:#f0f9ff!important;border-color:#7dd3fc!important}.rpcm-quick-row.is-off{background:#f1f5f9!important}.rpcm-quick-row input{accent-color:var(--rpcm-light-accent-strong)!important}.rpcm-quick-copy strong{color:var(--rpcm-light-text)!important}.rpcm-quick-close{border-color:var(--rpcm-light-border)!important;background:#fff!important;color:#526579!important}
       .rpcm-related-picker h2{color:var(--rpcm-light-text)!important}.rpcm-related-picker header p,.rpcm-related-picker-filters label,.rpcm-related-picker-count,.rpcm-related-picker>footer span{color:var(--rpcm-light-muted)!important}.rpcm-related-picker-row button{border-color:var(--rpcm-light-border)!important;background:#f8fafc!important;color:#526579!important}.rpcm-related-picker-row button.primary{border-color:var(--rpcm-light-accent-strong)!important;background:var(--rpcm-light-accent-strong)!important;color:#fff!important}.rpcm-related-picker-row button:hover{border-color:var(--rpcm-light-accent)!important;background:#e0f2fe!important;color:#0369a1!important}
+      .rpcm-related-picker-card.is-log{border-left:4px solid #38bdf8!important}.rpcm-related-picker-card.is-scene{border-color:#0284c7!important;border-left:4px solid #0284c7!important;box-shadow:0 0 0 1px rgba(2,132,199,.08)}.rpcm-related-source{display:inline-flex!important;align-items:center;margin-right:7px;padding:2px 6px;border-radius:999px;font-size:8px!important;font-weight:850;vertical-align:1px}.rpcm-related-source.is-log{background:#e0f2fe;color:#0369a1!important}.rpcm-related-source.is-scene{background:#dbeafe;color:#1e3a8a!important}.rpcm-related-picker-card.is-log .rpcm-related-picker-row button.primary{border-color:#38bdf8!important;background:#38bdf8!important;color:#0c4a6e!important}.rpcm-related-picker-card.is-scene .rpcm-related-picker-row button.primary{border-color:#0284c7!important;background:#0284c7!important;color:#fff!important}.rpcm-related-picker-card.is-scene .rpcm-related-picker-row button.primary:hover{border-color:#0369a1!important;background:#0369a1!important;color:#fff!important}
       .rpcm-ai-input-preview.caution{border-color:#fcd34d!important;background:#fffbeb!important;color:#92400e!important}.rpcm-ai-input-preview.danger,.rpcm-ai-input-preview.blocked{border-color:#fda4af!important;background:#fff1f2!important;color:#be123c!important}.rpcm-warnings{border-color:#fcd34d!important;background:#fffbeb!important;color:#92400e!important}.rpcm-warning-action{border-color:#f59e0b!important;background:#fff7ed!important;color:#9a3412!important}.rpcm-warning-action:hover{border-color:#d97706!important;background:#ffedd5!important;color:#7c2d12!important}
       .rpcm-active-timeline-chip{border-color:#7dd3fc!important;background:#f0f9ff!important;color:#0369a1!important}.rpcm-auto-inline-toggle{border-color:var(--rpcm-light-border)!important;background:#fff!important;color:#607286!important}.rpcm-auto-inline-toggle:hover{border-color:var(--rpcm-light-accent)!important;background:#e0f2fe!important;color:#0369a1!important}.rpcm-auto-inline-content{border-left-color:var(--rpcm-light-accent)!important}.rpcm-detached-search-box:focus-within svg{stroke:var(--rpcm-light-accent)!important}.rpcm-library-item-card>summary>[data-manager-select]{accent-color:var(--rpcm-light-accent-strong)!important}.rpcm-dup-group,.rpcm-dup-choice{background:#fff!important;border-color:var(--rpcm-light-border)!important}.rpcm-dup-group-head,.rpcm-dup-choice-head,.rpcm-dup-heading{background:#f8fafc!important;border-color:var(--rpcm-light-border)!important;color:var(--rpcm-light-muted)!important}.rpcm-dup-choice-head strong{color:var(--rpcm-light-text)!important}.rpcm-dup-choice-head span{color:var(--rpcm-light-muted)!important}.rpcm-dup-choice.is-selected{border-color:var(--rpcm-light-accent)!important;box-shadow:0 0 0 3px rgba(56,189,248,.14)!important}.rpcm-dup-editor,.rpcm-dup-heading input{background:#fff!important;color:var(--rpcm-light-text)!important;border-color:var(--rpcm-light-border)!important}.rpcm-dup-editor:focus,.rpcm-dup-heading input:focus{border-color:var(--rpcm-light-accent)!important;box-shadow:inset 0 0 0 1px var(--rpcm-light-accent)!important}#rpcm-log-dialog-backdrop .rpcm-date-row input[type=number]:focus,#rpcm-log-dialog-backdrop #rpcm-date-bulk-year:focus,#rpcm-log-dialog-backdrop .rpcm-date-full:focus{border-color:var(--rpcm-light-accent)!important;box-shadow:0 0 0 3px rgba(56,189,248,.18)!important}#rpcm-ai-backdrop .rpcm-ai-meter>span{background:var(--rpcm-light-accent)!important}#rpcm-ai-backdrop .rpcm-ai-input-preview.safe .rpcm-ai-meter>span{background:#22c55e!important}#rpcm-ai-backdrop .rpcm-ai-result-tab.active{border-color:var(--rpcm-light-accent)!important;background:var(--rpcm-light-accent-soft)!important;color:#0369a1!important}#rpcm-ai-backdrop .rpcm-ai-diff.added{border-color:#86efac!important;background:#f0fdf4!important;color:#166534!important}
       #rpcm-quick-trigger>em{background:#38bdf8!important}
@@ -16074,6 +16203,7 @@ JSON 하나만 출력:
     const duplicateGroups = duplicateLogDateGroups(room);
     const duplicateBranchHint = duplicateGroups.map(timelineBranchHintForGroup).find(Boolean) || '';
     const logBlocksForIssues = parseDatedLogBlocks((room.slots || []).find(s => s.id === 'logSummary')?.content || '');
+    const sceneBlocksForPicker = parseDatedLogBlocks(normalizeSceneMemoryBlocks((room.slots || []).find(s => s.id === 'sceneMemory')?.content || '')).filter(block => block.isOrdinalDay);
     const hasLogDateIssues = logBlocksForIssues.some(b => b.isUnknown || (!b.isUnknown && !b.isSpecialDate && b.year == null));
     const manualLogStats = manualLogSelectionStats(room);
     const storyStats = storyTimelineSummary(room);
@@ -16163,7 +16293,7 @@ JSON 하나만 출력:
               <div class="rpcm-breakdown">${usage.chips}</div>
             </div>
             ${warnings.length ? `<div class="rpcm-warnings rpcm-memory-only"><div>⚠ ${warnings.map(esc).join('<br>')}</div>${duplicateGroups.length ? `<button type="button" class="rpcm-warning-action" id="rpcm-resolve-duplicate-logs">${duplicateBranchHint ? '↩ 시간선 분기 확인' : '중복 날짜 바로 정리'}</button>` : ''}${hasLogDateIssues ? `<button type="button" class="rpcm-warning-action" id="rpcm-normalize-log-dates">날짜 / 연도 바로 수정</button>` : ''}</div>` : ''}
-            ${(autoDisplayItems.length || logBlocksForIssues.length) ? `<div class="rpcm-auto-active rpcm-memory-only"><div class="rpcm-auto-active-title"><span>현재 주입 항목 · 선정 이유</span>${logBlocksForIssues.length ? '<button type="button" class="rpcm-related-add" id="rpcm-related-add">+ 관련로그 추가</button>' : ''}</div>${autoDisplayItems.map(i => { const isBlockItem = i.group === 'log-auto' || i.sourceSlotId === 'logSummary' || i.sourceSlotId === 'sceneMemory' || /-log$/.test(String(i.autoType || '')) || i.autoType === 'related-scene'; const category = itemCategory(i); const evidence = relatedLogEvidence(i); const itemKey = pendingItemIdentity(i); return `<div class="rpcm-auto-active-row" data-pending-key="${esc(itemKey)}" data-source-key="${esc(String(i.sourceKey || '').replace(/^auto-log:/, ''))}" data-auto-type="${esc(i.autoType || '')}"><span class="rpcm-auto-badge tone-${categoryTone(category)}">${esc(category)}</span><div class="rpcm-auto-active-copy"><strong>${esc(i.title)}</strong><span class="rpcm-auto-reason">${esc(itemReason(i) || '자동 선택')}</span>${evidence ? `<span class="rpcm-auto-evidence">선정 근거 · ${esc(evidence)}</span>` : ''}</div><div class="rpcm-auto-active-meta"><span>${formatCount(String(i.content || '').length)}자 · ${esc(remainingLabelForItem(i))}</span>${isBlockItem ? `<button type="button" class="rpcm-auto-inline-toggle" title="내용 펼치기" aria-label="내용 펼치기">▾</button>${i.autoType === 'related-log' ? '<button type="button" class="rpcm-auto-reroll" title="내용을 확인하고 다른 로그로 교체">다른 로그</button>' : ''}<button type="button" class="rpcm-auto-remove" title="현재 주입에서 빼기">빼기</button>` : ''}</div>${isBlockItem ? `<pre class="rpcm-auto-inline-content" hidden>${esc(String(i.content || '').trim())}</pre>` : ''}</div>`; }).join('')}${aiContextReportHtml}</div>` : ''}
+            ${(autoDisplayItems.length || logBlocksForIssues.length || sceneBlocksForPicker.length) ? `<div class="rpcm-auto-active rpcm-memory-only"><div class="rpcm-auto-active-title"><span>현재 주입 항목 · 선정 이유</span>${(logBlocksForIssues.length || sceneBlocksForPicker.length) ? '<button type="button" class="rpcm-related-add" id="rpcm-related-add">+ 관련 로그·장면 추가</button>' : ''}</div>${autoDisplayItems.map(i => { const isBlockItem = i.group === 'log-auto' || i.sourceSlotId === 'logSummary' || i.sourceSlotId === 'sceneMemory' || /-log$/.test(String(i.autoType || '')) || i.autoType === 'related-scene' || i.autoType === 'manual-scene'; const category = itemCategory(i); const evidence = relatedLogEvidence(i); const itemKey = pendingItemIdentity(i); return `<div class="rpcm-auto-active-row" data-pending-key="${esc(itemKey)}" data-source-key="${esc(String(i.sourceKey || '').replace(/^auto-log:/, ''))}" data-auto-type="${esc(i.autoType || '')}"><span class="rpcm-auto-badge tone-${categoryTone(category)}">${esc(category)}</span><div class="rpcm-auto-active-copy"><strong>${esc(i.title)}</strong><span class="rpcm-auto-reason">${esc(itemReason(i) || '자동 선택')}</span>${evidence ? `<span class="rpcm-auto-evidence">선정 근거 · ${esc(evidence)}</span>` : ''}</div><div class="rpcm-auto-active-meta"><span>${formatCount(String(i.content || '').length)}자 · ${esc(remainingLabelForItem(i))}</span>${isBlockItem ? `<button type="button" class="rpcm-auto-inline-toggle" title="내용 펼치기" aria-label="내용 펼치기">▾</button>${i.autoType === 'related-log' ? '<button type="button" class="rpcm-auto-reroll" title="내용을 확인하고 다른 로그로 교체">다른 로그</button>' : ''}<button type="button" class="rpcm-auto-remove" title="현재 주입에서 빼기">빼기</button>` : ''}</div>${isBlockItem ? `<pre class="rpcm-auto-inline-content" hidden>${esc(String(i.content || '').trim())}</pre>` : ''}</div>`; }).join('')}${aiContextReportHtml}</div>` : ''}
 
             <div class="rpcm-ai-launchbar rpcm-chatgpt-launchbar rpcm-memory-only">
               <div class="rpcm-chatgpt-copy"><strong>🌐 ChatGPT 웹으로 보내기</strong><span>실제 RP 원문·저장된 기억·사용자 수정 지침을 TXT로 첨부합니다. 외부 요약 API는 호출하지 않습니다.</span></div>
@@ -16265,10 +16395,10 @@ JSON 하나만 출력:
         if (!key) return;
         btn.disabled = true;
         try {
-          const selectedKey = await openRelatedLogPickerDialog(room, { replaceIdentity:key });
-          if (!selectedKey) { btn.disabled = false; return; }
-          await applyManualRelatedLog(room, selectedKey, key);
-          notify('확인한 날짜로그로 교체했습니다. ‘직접 주입’으로 유지됩니다.', 'success', 4200);
+          const selection = await openRelatedLogPickerDialog(room, { replaceIdentity:key });
+          if (!selection) { btn.disabled = false; return; }
+          await applyManualRelatedSelection(room, selection, key);
+          notify(`확인한 ${selection.kind === 'scene' ? '장면 기억' : '날짜로그'}으로 교체했습니다. ‘직접 주입’으로 유지됩니다.`, 'success', 4200);
           renderModalIfOpen();
         } catch (error) {
           btn.disabled = false;
@@ -16281,10 +16411,10 @@ JSON 하나만 출력:
     if (relatedAddBtn) relatedAddBtn.onclick = async () => {
       relatedAddBtn.disabled = true;
       try {
-        const selectedKey = await openRelatedLogPickerDialog(room);
-        if (!selectedKey) { relatedAddBtn.disabled = false; return; }
-        await applyManualRelatedLog(room, selectedKey);
-        notify('관련로그를 직접 추가했습니다. AI 맥락 재검토 후에도 유지됩니다.', 'success', 4200);
+        const selection = await openRelatedLogPickerDialog(room);
+        if (!selection) { relatedAddBtn.disabled = false; return; }
+        await applyManualRelatedSelection(room, selection);
+        notify(`${selection.kind === 'scene' ? '장면 기억' : '관련로그'}를 직접 추가했습니다. AI 맥락 재검토 후에도 유지됩니다.`, 'success', 4200);
         renderModalIfOpen();
       } catch (error) {
         relatedAddBtn.disabled = false;
