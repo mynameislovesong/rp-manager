@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽위시 RP Manager 개인화
 // @namespace    local.rp.context.manager.personal
-// @version      0.16.5
+// @version      0.16.6
 // @description  기존 RP 기억 관리 기능과 ChatGPT 웹 전송형 로그요약·현재상태 갱신을 지원하는 개인화 버전입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -259,13 +259,13 @@
   // 버전별 키를 쓰면 구버전과 신버전이 동시에 설치됐을 때 둘 다 실행될 수 있습니다.
   // 모든 버전이 공유하는 고정 키로 중복 실행을 막습니다.
   if (window.__WISH_RP_MANAGER_LOADED__) return;
-  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.16.5-personal', loadedAt: Date.now() };
+  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.16.6-personal', loadedAt: Date.now() };
   // 같은 페이지에 남아 있는 v0.8.10 복사본이 뒤늦게 시작되는 경우도 차단합니다.
   window.__RP_MANAGER_0810_LOADED__ = true;
 
   const APP = {
     name: '🪽위시 RP Manager 개인화',
-    version: '0.16.5',
+    version: '0.16.6',
     dbName: 'RPContextManagerDB',
     dbVersion: 2,
     storeName: 'rooms',
@@ -5276,15 +5276,15 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
     const statusState = sameStatus ? String(status?.state || '').toLowerCase() : '';
     const createdAt = Date.parse(existing.createdAt || '');
     const expired = Number.isFinite(createdAt) && Date.now() - createdAt > 6 * 60 * 60 * 1000;
-    const failed = statusState === 'error';
-    const finished = statusState === 'sent' || statusState === 'ready';
     const statusAt = Date.parse(status?.at || '');
     const activityAt = Number.isFinite(statusAt) ? statusAt : createdAt;
-    const staleInProgress = sameStatus
+    const recentInProgress = sameStatus
       && (statusState === 'pending' || statusState === 'preparing')
       && Number.isFinite(activityAt)
-      && Date.now() - activityAt > 5 * 60 * 1000;
-    if (!expired && !failed && !finished && !staleInProgress) return existing;
+      && Date.now() - activityAt <= 3 * 60 * 1000;
+    // 동일 ID의 최근 진행 상태만 실제 처리 중으로 신뢰합니다. status 누락·ID 불일치·
+    // 완료/오류/알 수 없는 상태와 3분 넘게 갱신되지 않은 요청은 새 전송 전에 폐기합니다.
+    if (!expired && recentInProgress) return existing;
     try { GM_deleteValue(CHATGPT_BRIDGE_PENDING_KEY); } catch (_) {}
     return null;
   }
@@ -15527,7 +15527,7 @@ JSON 하나만 출력:
           : `<input id="rpcm-api-secret" type="password" autocomplete="new-password" value="${esc(draftSecrets.get(provider) || '')}" placeholder="${esc(secretLabel)}">`;
         const bridgeStatus = chatGptBridgeStatus();
         const effectiveUrl = String(room.chatGptUrlOverride || chatSettings.globalUrl || '');
-        const chatGptCard = `<section class="rpcm-ai-card rpcm-chatgpt-settings"><h3>ChatGPT 웹 연동</h3><div class="rpcm-ai-grid"><label class="rpcm-ai-field" style="grid-column:1/-1"><span>전역 기본 대화방 URL · /c/ 주소</span><input id="rpcm-chatgpt-global-url" value="${esc(chatSettings.globalUrl || '')}" placeholder="https://chatgpt.com/c/..."></label><label class="rpcm-ai-field" style="grid-column:1/-1"><span>이 방 전용 URL override · 비우면 전역 기본값 사용</span><input id="rpcm-chatgpt-room-url" value="${esc(room.chatGptUrlOverride || '')}" placeholder="${esc(chatSettings.globalUrl || 'https://chatgpt.com/c/...')}"></label><label class="rpcm-api-context-toggle"><span><strong>현재상태 갱신 알림</strong><small>입력 패널 위 배너로만 알립니다.</small></span><input id="rpcm-chatgpt-reminder-enabled" type="checkbox" ${chatSettings.reminderEnabled ? 'checked' : ''}></label><label class="rpcm-ai-field"><span>알림 주기 · USER 턴</span><input id="rpcm-chatgpt-reminder-turns" type="number" min="1" max="1000" value="${chatSettings.reminderTurns}"></label></div><div class="rpcm-ai-connection-actions"><span class="rpcm-ai-auth-note">${effectiveUrl ? `사용 주소 · ${esc(effectiveUrl)}` : '대화방 URL을 저장해 주세요.'}${bridgeStatus?.message ? ` · 최근 상태: ${esc(bridgeStatus.message)}` : ''}</span><button type="button" class="rpcm-ai-btn" data-chatgpt-act="check">연결 확인</button></div><p class="rpcm-ai-help">로그요약·현재상태는 외부 API를 호출하지 않습니다. 실제 ChatGPT 대화방에 TXT 자료와 짧은 실행 명령을 전달합니다.</p></section>`;
+        const chatGptCard = `<section class="rpcm-ai-card rpcm-chatgpt-settings"><h3>ChatGPT 웹 연동</h3><div class="rpcm-ai-grid"><label class="rpcm-ai-field" style="grid-column:1/-1"><span>전역 기본 대화방 URL · /c/ 주소</span><input id="rpcm-chatgpt-global-url" value="${esc(chatSettings.globalUrl || '')}" placeholder="https://chatgpt.com/c/..."></label><label class="rpcm-ai-field" style="grid-column:1/-1"><span>이 방 전용 URL override · 비우면 전역 기본값 사용</span><input id="rpcm-chatgpt-room-url" value="${esc(room.chatGptUrlOverride || '')}" placeholder="${esc(chatSettings.globalUrl || 'https://chatgpt.com/c/...')}"></label><label class="rpcm-api-context-toggle"><span><strong>현재상태 갱신 알림</strong><small>입력 패널 위 배너로만 알립니다.</small></span><input id="rpcm-chatgpt-reminder-enabled" type="checkbox" ${chatSettings.reminderEnabled ? 'checked' : ''}></label><label class="rpcm-ai-field"><span>알림 주기 · USER 턴</span><input id="rpcm-chatgpt-reminder-turns" type="number" min="1" max="1000" value="${chatSettings.reminderTurns}"></label></div><div class="rpcm-ai-connection-actions"><span class="rpcm-ai-auth-note">${effectiveUrl ? `사용 주소 · ${esc(effectiveUrl)}` : '대화방 URL을 저장해 주세요.'}${bridgeStatus?.message ? ` · 최근 상태: ${esc(bridgeStatus.message)}` : ''}</span><button type="button" class="rpcm-ai-btn" data-chatgpt-act="reset">전송 상태 초기화</button><button type="button" class="rpcm-ai-btn" data-chatgpt-act="check">연결 확인</button></div><p class="rpcm-ai-help">로그요약·현재상태는 외부 API를 호출하지 않습니다. 실제 ChatGPT 대화방에 TXT 자료와 짧은 실행 명령을 전달합니다.</p></section>`;
         backdrop.innerHTML = `<div class="rpcm-ai-dialog rpcm-unified-api-dialog"><div class="rpcm-ai-head"><div><h2>⚙ ChatGPT 웹 · 보조 API 설정</h2><p>요약은 ChatGPT 웹으로, 타임라인·API 주입 판단은 기존 보조 API로 실행합니다.</p></div><div class="rpcm-ai-spacer"></div><button type="button" class="rpcm-ai-close" data-api-act="close">✕</button></div><div class="rpcm-ai-body">${chatGptCard}<section class="rpcm-ai-card"><h3>타임라인·주입 판단용 API 연결</h3><div class="rpcm-ai-grid"><label class="rpcm-ai-field"><span>연결 방식</span><select id="rpcm-api-provider">${providerOptions}</select></label>${provider === 'openai' ? `<label class="rpcm-ai-field"><span>OpenAI / 호환 API 주소</span><input id="rpcm-api-openai-url" value="${esc(settings.openaiBaseUrl || '')}" placeholder="https://api.openai.com/v1"></label>` : ''}${provider === 'vertex' || provider === 'firebase' ? `<label class="rpcm-ai-field"><span>Vertex backend 위치</span><input id="rpcm-api-vertex-location" value="${esc(settings.vertexLocation || 'global')}" placeholder="global"></label>` : ''}<label class="rpcm-ai-field rpcm-ai-secret" style="grid-column:1/-1"><span>${secretLabel}</span>${secretInput}</label></div><p class="rpcm-ai-help">${provider === 'vertex' ? 'Firebase Config의 apiKey·projectId로 Firebase AI Logic의 Vertex/Agent Platform backend를 사용합니다. ' : ''}인증 정보는 이 브라우저에만 저장되며 전체 백업에는 포함되지 않습니다.</p></section><section class="rpcm-ai-card"><h3>API 기능별 모델과 상태</h3><div class="rpcm-api-feature-list">${featureRow('timeline','전체 타임라인 초안 생성')}${featureRow('context','관련 날짜로그·장면 기억 독립 판단')}</div>${openAiModelList}${openAiModelHelp}<label class="rpcm-api-context-toggle"><span><strong>API 주입 판단 사용</strong><small>OFF면 API를 호출하지 않습니다. 날짜로그 판단 실패는 기존 키워드 방식으로 대체하고, 장면 기억 판단 실패는 해당 턴에 주입하지 않습니다.</small></span><input id="rpcm-api-context-enabled" type="checkbox" ${room.aiContextLogRerankEnabled ? 'checked' : ''}></label></section>${renderRoomAiUsageHtml(room)}<div class="rpcm-ai-status" id="rpcm-api-settings-status"></div></div><div class="rpcm-ai-foot"><button type="button" class="rpcm-ai-btn" data-api-act="test">보조 API 연결 테스트</button><button type="button" class="rpcm-ai-btn" data-api-act="close">취소</button><button type="button" class="rpcm-ai-btn primary" data-api-act="save">설정 저장</button></div></div>`;
         backdrop.querySelector('#rpcm-api-provider').onchange = event => { rememberForm(); provider = event.target.value; settings.provider = provider; render(); };
       };
@@ -15535,6 +15535,24 @@ JSON 하나만 출력:
       backdrop.addEventListener('click', async event => {
         if (event.target === backdrop) { finish(false); return; }
         const chatAction = event.target.closest('[data-chatgpt-act]')?.dataset.chatgptAct;
+        if (chatAction === 'reset') {
+          try {
+            GM_deleteValue(CHATGPT_BRIDGE_PENDING_KEY);
+            GM_deleteValue(CHATGPT_BRIDGE_STATUS_KEY);
+            const status = backdrop.querySelector('#rpcm-api-settings-status');
+            if (status) {
+              status.className = 'rpcm-ai-status success';
+              status.textContent = 'ChatGPT 전송 상태를 초기화했습니다.';
+            }
+          } catch (error) {
+            const status = backdrop.querySelector('#rpcm-api-settings-status');
+            if (status) {
+              status.className = 'rpcm-ai-status error';
+              status.textContent = `전송 상태 초기화 실패 · ${String(error?.message || error)}`;
+            }
+          }
+          return;
+        }
         if (chatAction === 'check') {
           const button = event.target.closest('button');
           const status = backdrop.querySelector('#rpcm-api-settings-status');
