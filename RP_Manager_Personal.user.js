@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽위시 RP Manager 개인화
 // @namespace    local.rp.context.manager.personal
-// @version      0.16.8
+// @version      0.16.9
 // @description  기존 RP 기억 관리 기능과 ChatGPT 웹 전송형 로그요약·현재상태 갱신을 지원하는 개인화 버전입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -140,8 +140,92 @@
     return null;
   }
 
+  const CHATGPT_COMPOSER_SELECTORS = [
+    '#prompt-textarea',
+    '[contenteditable="true"][data-testid*="composer"]',
+    'textarea[aria-label*="ChatGPT"]',
+    'textarea[data-id="root"]',
+    '[contenteditable="true"][role="textbox"]',
+    'div[contenteditable="true"]',
+    'textarea[placeholder]',
+    '[role="textbox"]',
+  ];
+  let chatGptComposerSelectionLogged = false;
+
+  function chatGptComposerMetadata(element) {
+    return {
+      tagName:String(element?.tagName || ''),
+      id:String(element?.id || ''),
+      role:String(element?.getAttribute?.('role') || ''),
+      contenteditable:String(element?.getAttribute?.('contenteditable') || ''),
+      ariaLabel:String(element?.getAttribute?.('aria-label') || ''),
+      placeholder:String(element?.getAttribute?.('placeholder') || element?.getAttribute?.('data-placeholder') || ''),
+      dataTestId:String(element?.getAttribute?.('data-testid') || ''),
+    };
+  }
+
+  function chatGptComposerCandidates() {
+    return [...new Set(CHATGPT_COMPOSER_SELECTORS.flatMap(selector => [...document.querySelectorAll(selector)]))]
+      .filter(element => {
+        const editable = element instanceof HTMLTextAreaElement || element.getAttribute('contenteditable') === 'true';
+        return editable
+          && element.getClientRects().length > 0
+          && !element.disabled
+          && element.getAttribute('aria-disabled') !== 'true';
+      });
+  }
+
+  function chatGptComposerScore(element) {
+    const rect = element.getBoundingClientRect();
+    const descriptor = [
+      element.id, element.getAttribute('aria-label'), element.getAttribute('placeholder'),
+      element.getAttribute('data-placeholder'), element.getAttribute('data-testid'), element.getAttribute('role'),
+    ].filter(Boolean).join(' ');
+    const form = element.closest('form');
+    let region = form || element.closest('[data-testid*="composer"]') || element.parentElement;
+    if (!form) {
+      for (let depth = 0; region?.parentElement && depth < 3; depth += 1) region = region.parentElement;
+    }
+    const buttons = [...(region || document).querySelectorAll('button')].filter(button => button.getClientRects().length && !button.disabled);
+    const buttonDescriptor = buttons.map(button => [
+      button.getAttribute('aria-label'), button.getAttribute('title'), button.getAttribute('data-testid'), button.textContent,
+    ].filter(Boolean).join(' ')).join(' ');
+    let score = 0;
+    if (element.id === 'prompt-textarea') score += 140;
+    if (element instanceof HTMLTextAreaElement) score += 50;
+    if (element.getAttribute('contenteditable') === 'true') score += 55;
+    if (element.getAttribute('role') === 'textbox') score += 20;
+    if (form) score += 55;
+    if (/(?:send|submit|보내기|전송)/i.test(buttonDescriptor)) score += 45;
+    if (/(?:plus|attach|upload|add\s+file|첨부|파일\s*(?:추가|업로드))/i.test(buttonDescriptor)) score += 25;
+    if (/(?:chatgpt|message|prompt|메시지|물어보세요|무엇이든)/i.test(descriptor)) score += 45;
+    if (rect.top >= window.innerHeight * 0.45) score += 35;
+    if (rect.bottom >= window.innerHeight * 0.7) score += 25;
+    if (/(?:search|검색|title|제목)/i.test(descriptor)) score -= 180;
+    return score;
+  }
+
+  function warnChatGptComposerCandidates() {
+    const candidates = chatGptComposerCandidates();
+    console.warn('[RP Manager ChatGPT Bridge] composer 탐색 실패 후보', candidates.map(element => ({
+      ...chatGptComposerMetadata(element),
+      score:chatGptComposerScore(element),
+    })));
+  }
+
   function chatGptComposer() {
-    return document.querySelector('#prompt-textarea,[contenteditable="true"][data-testid*="composer"],textarea[aria-label*="ChatGPT"],textarea[data-id="root"]');
+    const selected = chatGptComposerCandidates()
+      .map(element => ({ element, score:chatGptComposerScore(element) }))
+      .sort((left, right) => right.score - left.score)[0];
+    if (!selected || selected.score < 40) return null;
+    if (!chatGptComposerSelectionLogged) {
+      chatGptComposerSelectionLogged = true;
+      console.warn('[RP Manager ChatGPT Bridge] composer 후보 선택', {
+        ...chatGptComposerMetadata(selected.element),
+        score:selected.score,
+      });
+    }
+    return selected.element;
   }
 
   function fillChatGptComposer(element, text) {
@@ -350,6 +434,7 @@
     if (payload.type === 'connection-check') {
       const composer = await waitForChatGptElement(chatGptComposer, 60000);
       if (!composer) {
+        warnChatGptComposerCandidates();
         setChatGptBridgeStatus(payload, 'error', '대화방 입력창을 찾지 못했습니다.');
         try { GM_deleteValue(CHATGPT_BRIDGE_PENDING_KEY); } catch (_) {}
         chatGptBridgeNotice('ChatGPT 연결 확인 실패 · 대화방 입력창을 찾지 못했습니다.', 'error');
@@ -364,7 +449,10 @@
       setChatGptBridgeStatus(payload, 'preparing', 'ChatGPT 입력창과 첨부 기능을 준비하는 중');
       chatGptBridgeNotice('RP Manager 자료 준비 중…', 'info', null, 0);
       const composer = await waitForChatGptElement(chatGptComposer, 90000);
-      if (!composer) throw new Error('ChatGPT 대화 입력창을 찾지 못했습니다.');
+      if (!composer) {
+        warnChatGptComposerCandidates();
+        throw new Error('ChatGPT 대화 입력창을 찾지 못했습니다.');
+      }
       await attachChatGptTextFiles(payload);
       fillChatGptComposer(composer, String(payload.command || '첨부된 자료와 지침에 따라 완성본을 작성해 주세요.'));
       const send = await waitForChatGptElement(() => {
@@ -407,13 +495,13 @@
   // 버전별 키를 쓰면 구버전과 신버전이 동시에 설치됐을 때 둘 다 실행될 수 있습니다.
   // 모든 버전이 공유하는 고정 키로 중복 실행을 막습니다.
   if (window.__WISH_RP_MANAGER_LOADED__) return;
-  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.16.8-personal', loadedAt: Date.now() };
+  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.16.9-personal', loadedAt: Date.now() };
   // 같은 페이지에 남아 있는 v0.8.10 복사본이 뒤늦게 시작되는 경우도 차단합니다.
   window.__RP_MANAGER_0810_LOADED__ = true;
 
   const APP = {
     name: '🪽위시 RP Manager 개인화',
-    version: '0.16.8',
+    version: '0.16.9',
     dbName: 'RPContextManagerDB',
     dbVersion: 2,
     storeName: 'rooms',
