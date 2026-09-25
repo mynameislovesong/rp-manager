@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽위시 RP Manager 개인화
 // @namespace    local.rp.context.manager.personal
-// @version      0.16.6
+// @version      0.16.7
 // @description  기존 RP 기억 관리 기능과 ChatGPT 웹 전송형 로그요약·현재상태 갱신을 지원하는 개인화 버전입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -170,18 +170,84 @@
     if (!specs.length) return [];
     const existingText = String(document.body?.innerText || '');
     if (specs.every(spec => existingText.includes(spec.name))) return [];
-    const input = await waitForChatGptElement(() => document.querySelector('#upload-files,input[type="file"][multiple]:not([accept^="image/"]),input[type="file"]'), 90000);
+    const composer = chatGptComposer();
+    console.warn('[RP Manager ChatGPT bridge] composer 확인', { found:!!composer });
+    if (!composer) throw new Error('ChatGPT 파일 첨부용 composer를 찾지 못했습니다.');
+
+    const composerRoot = composer.closest('form') || composer.closest('[data-testid*="composer"]') || composer.parentElement;
+    const fileInputsBeforeOpen = new Set(document.querySelectorAll('input[type="file"]'));
+    const isNonImageFileInput = input => {
+      if (!(input instanceof HTMLInputElement) || input.type !== 'file' || input.disabled) return false;
+      const accept = String(input.accept || '').toLowerCase().split(',').map(value => value.trim()).filter(Boolean);
+      return !accept.length || accept.some(value => !value.startsWith('image/'));
+    };
+    const knownFileInput = () => {
+      const candidates = [
+        document.querySelector('#upload-files'),
+        document.querySelector('input[type="file"][data-testid*="upload"]'),
+        document.querySelector('input[type="file"][data-testid*="attach"]'),
+        document.querySelector('input[type="file"][accept*="text/"]'),
+        document.querySelector('input[type="file"][accept*=".txt"]'),
+        ...(composerRoot ? [...composerRoot.querySelectorAll('input[type="file"]')] : []),
+      ].filter(isNonImageFileInput);
+      return candidates[0] || null;
+    };
+    const newlyMountedFileInput = () => [...document.querySelectorAll('input[type="file"]')]
+      .find(input => !fileInputsBeforeOpen.has(input) && isNonImageFileInput(input)) || knownFileInput();
+
+    let input = knownFileInput();
+    if (!input) {
+      const attachmentSelectors = [
+        'button[data-testid="composer-plus-btn"]',
+        'button[data-testid="composer-plus-button"]',
+        'button[data-testid*="attach"]',
+        'button[data-testid*="plus"]',
+        'button[aria-label*="첨부"]',
+        'button[aria-label*="파일"]',
+        'button[aria-label*="Attach"]',
+        'button[aria-label*="Add"]',
+      ];
+      const attachmentButton = attachmentSelectors
+        .flatMap(selector => [
+          ...(composerRoot ? [...composerRoot.querySelectorAll(selector)] : []),
+          ...document.querySelectorAll(selector),
+        ])
+        .find(button => !button.disabled && button.getClientRects().length) || null;
+      console.warn('[RP Manager ChatGPT bridge] attachment button 발견', { found:!!attachmentButton });
+      if (!attachmentButton) throw new Error('ChatGPT 첨부/+ 버튼을 찾지 못했습니다.');
+      attachmentButton.click();
+
+      input = await waitForChatGptElement(newlyMountedFileInput, 4000, 200);
+      let uploadMenuItem = null;
+      if (!input) {
+        uploadMenuItem = await waitForChatGptElement(() => {
+          const candidates = [...document.querySelectorAll('[role="menuitem"],[role="menuitemradio"],[role="menu"] button,[data-radix-menu-content] button')];
+          return candidates.find(item => {
+            if (!item.getClientRects().length) return false;
+            const label = `${item.getAttribute('aria-label') || ''} ${item.textContent || ''}`.replace(/\s+/g, ' ').trim();
+            return /파일\s*(업로드|추가)|(?:upload|add)\s+(?:photos?\s+(?:and|&)\s+)?files?/i.test(label);
+          }) || null;
+        }, 5000, 200);
+        if (uploadMenuItem) uploadMenuItem.click();
+      }
+      console.warn('[RP Manager ChatGPT bridge] attachment menu open', { menuItemFound:!!uploadMenuItem, inputMounted:!!input });
+      if (!input) input = await waitForChatGptElement(newlyMountedFileInput, 60000, 400);
+    }
+    console.warn('[RP Manager ChatGPT bridge] file input 발견', { found:!!input, id:String(input?.id || ''), multiple:!!input?.multiple });
     if (!input) throw new Error('ChatGPT 파일 첨부 입력창을 찾지 못했습니다.');
     const transfer = new DataTransfer();
     const files = specs.map(spec => new File([spec.content], spec.name, { type:spec.mimeType || 'text/plain;charset=utf-8', lastModified:Date.now() }));
     files.forEach(file => transfer.items.add(file));
     try { input.files = transfer.files; }
     catch (error) { throw new Error(`TXT 파일 목록을 첨부 입력창에 전달하지 못했습니다: ${error?.message || error}`); }
+    console.warn('[RP Manager ChatGPT bridge] FileList 주입', { count:transfer.files.length });
+    input.dispatchEvent(new Event('input', { bubbles:true, composed:true }));
     input.dispatchEvent(new Event('change', { bubbles:true, composed:true }));
     const uploaded = await waitForChatGptElement(() => {
       const pageText = String(document.body?.innerText || '');
       return files.every(file => pageText.includes(file.name)) ? true : null;
     }, 60000, 700);
+    console.warn('[RP Manager ChatGPT bridge] 첨부 파일명 확인', { confirmed:!!uploaded, fileNames:files.map(file => file.name) });
     if (!uploaded) throw new Error('ChatGPT가 TXT 첨부를 완료한 것을 확인하지 못했습니다.');
     return files;
   }
@@ -259,13 +325,13 @@
   // 버전별 키를 쓰면 구버전과 신버전이 동시에 설치됐을 때 둘 다 실행될 수 있습니다.
   // 모든 버전이 공유하는 고정 키로 중복 실행을 막습니다.
   if (window.__WISH_RP_MANAGER_LOADED__) return;
-  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.16.6-personal', loadedAt: Date.now() };
+  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.16.7-personal', loadedAt: Date.now() };
   // 같은 페이지에 남아 있는 v0.8.10 복사본이 뒤늦게 시작되는 경우도 차단합니다.
   window.__RP_MANAGER_0810_LOADED__ = true;
 
   const APP = {
     name: '🪽위시 RP Manager 개인화',
-    version: '0.16.6',
+    version: '0.16.7',
     dbName: 'RPContextManagerDB',
     dbVersion: 2,
     storeName: 'rooms',
