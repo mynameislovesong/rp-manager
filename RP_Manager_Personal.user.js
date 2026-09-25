@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽위시 RP Manager 개인화
 // @namespace    local.rp.context.manager.personal
-// @version      0.16.4
+// @version      0.16.5
 // @description  기존 RP 기억 관리 기능과 ChatGPT 웹 전송형 로그요약·현재상태 갱신을 지원하는 개인화 버전입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -259,13 +259,13 @@
   // 버전별 키를 쓰면 구버전과 신버전이 동시에 설치됐을 때 둘 다 실행될 수 있습니다.
   // 모든 버전이 공유하는 고정 키로 중복 실행을 막습니다.
   if (window.__WISH_RP_MANAGER_LOADED__) return;
-  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.16.4-personal', loadedAt: Date.now() };
+  window.__WISH_RP_MANAGER_LOADED__ = { version: '0.16.5-personal', loadedAt: Date.now() };
   // 같은 페이지에 남아 있는 v0.8.10 복사본이 뒤늦게 시작되는 경우도 차단합니다.
   window.__RP_MANAGER_0810_LOADED__ = true;
 
   const APP = {
     name: '🪽위시 RP Manager 개인화',
-    version: '0.16.4',
+    version: '0.16.5',
     dbName: 'RPContextManagerDB',
     dbVersion: 2,
     storeName: 'rooms',
@@ -5278,7 +5278,13 @@ USER에 관한 각 문장은 다음 중 하나에 해당할 때만 작성한다.
     const expired = Number.isFinite(createdAt) && Date.now() - createdAt > 6 * 60 * 60 * 1000;
     const failed = statusState === 'error';
     const finished = statusState === 'sent' || statusState === 'ready';
-    if (!expired && !failed && !finished) return existing;
+    const statusAt = Date.parse(status?.at || '');
+    const activityAt = Number.isFinite(statusAt) ? statusAt : createdAt;
+    const staleInProgress = sameStatus
+      && (statusState === 'pending' || statusState === 'preparing')
+      && Number.isFinite(activityAt)
+      && Date.now() - activityAt > 5 * 60 * 1000;
+    if (!expired && !failed && !finished && !staleInProgress) return existing;
     try { GM_deleteValue(CHATGPT_BRIDGE_PENDING_KEY); } catch (_) {}
     return null;
   }
